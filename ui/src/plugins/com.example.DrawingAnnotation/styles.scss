@@ -1,0 +1,366 @@
+.drawing-annotation-toolbar {
+  position: absolute;
+  display: flex;
+  pointer-events: auto;
+  align-items: center;
+  background: #fff;
+  border-radius: 24px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-family: inherit;
+  user-select: none;
+  overflow: hidden;
+  white-space: nowrap;
+
+  &.expanded {
+    padding: 8px 16px;
+    gap: 4px;
+    cursor: default;
+    transform: translate(0, 0);
+  }
+
+  &.collapsed {
+    padding: 4px;
+    gap: 0;
+    cursor: pointer;
+    transform: translate(-50%, -50%);
+  }
+
+  &.dragging {
+    transition: none;
+    cursor: grabbing;
+  }
+
+  &.animating {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .tool-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    background: transparent;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+    i {
+      color: #666;
+      font-size: 20px;
+    }
+
+    &:hover:not(.active) {
+      background: #f5f5f5;
+    }
+
+    &.active {
+      background: #e3f2fd;
+      i {
+        color: #2196f3;
+      }
+    }
+
+    &.danger:hover {
+      background: #ffeeee;
+    }
+  }
+
+  .collapsed-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+
+    &.active {
+      background: #e3f2fd;
+    }
+
+    i {
+      color: #2196f3;
+      font-size: 24px;
+    }
+  }
+
+  .drag-handle {
+    width: 24px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: grab;
+    color: #999;
+    margin-right: 4px;
+
+    i {
+      font-size: 20px;
+    }
+  }
+
+  .color-picker-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    margin-left: 4px;
+    margin-right: 4px;
+
+    input[type="color"] {
+      border: none;
+      padding: 0;
+      background: transparent;
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      border-radius: 50%;
+      transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      transform-origin: center;
+
+      &:hover {
+        transform: scale(1.15);
+      }
+      &:active {
+        transform: scale(0.9);
+      }
+    }
+  }
+
+  .separator {
+    width: 1px;
+    height: 24px;
+    background: #e0e0e0;
+    margin: 0 8px;
+  }
+
+  .select-area-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 8px;
+    transition: all 0.2s;
+
+    &.active {
+      background: #e3f2fd;
+      cursor: pointer;
+      opacity: 1;
+
+      i {
+        color: #2196f3;
+      }
+
+      &:hover {
+        transform: scale(1.05);
+      }
+    }
+
+    &.inactive {
+      background: transparent;
+      cursor: default;
+      opacity: 0.4;
+
+      i {
+        color: #666;
+      }
+    }
+
+    i {
+      font-size: 22px;
+    }
+  }
+
+  .minimize-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: 4px;
+
+    &:hover {
+      background: #f5f5f5;
+    }
+
+    i {
+      color: #666;
+      font-size: 18px;
+    }
+  }
+}
+
+.drawing-controls-wrapper {
+  height: 100%;
+  padding: 16px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.drawing-annotation-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    h3 {
+      margin: 0;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .actions {
+      display: flex;
+      gap: 4px;
+
+      button {
+        border: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+        &:active {
+          transform: scale(0.95);
+        }
+
+        &.btn-load {
+          background: #e3f2fd;
+          color: #1976d2;
+        }
+
+        &.btn-clear {
+          background: #ffebee;
+          color: #d32f2f;
+        }
+      }
+    }
+  }
+
+  .empty-state {
+    color: #888;
+    font-style: italic;
+    font-size: 13px;
+  }
+
+  .annotation-item {
+    padding: 8px 12px;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+    &.selected {
+      background: #e3f2fd;
+      border: 1px solid #2196f3;
+    }
+
+    &.unselected {
+      background: #f5f5f5;
+      border: 1px solid transparent;
+    }
+
+    .item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+
+      .title-container {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        .color-indicator {
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+
+        .title-text {
+          font-weight: bold;
+          font-size: 16px;
+        }
+
+        .title-input {
+          font-weight: bold;
+          font-size: 16px;
+          border: 1px solid #ccc;
+          border-radius: 2px;
+          padding: 2px 4px;
+        }
+      }
+
+      .delete-btn {
+        cursor: pointer;
+        color: #999;
+        font-size: 18px;
+        padding: 4px;
+        border-radius: 4px;
+        transition: color 0.1s;
+
+        &:hover {
+          color: #f44336;
+        }
+      }
+    }
+
+    .desc-input {
+      width: 100%;
+      min-height: 40px;
+      margin-top: 4px;
+      padding: 4px;
+      font-size: 14px;
+      box-sizing: border-box;
+      font-family: inherit;
+    }
+
+    .desc-text {
+      font-size: 13px;
+      color: #555;
+      padding-left: 20px;
+    }
+  }
+
+  .arrow-connector {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 0;
+    position: relative;
+    transition: all 0.2s;
+
+    .icon-down {
+      font-size: 24px;
+      color: #999;
+    }
+
+    .delete-btn {
+      position: absolute;
+      right: 12px;
+      cursor: pointer;
+      color: #ccc;
+      font-size: 14px;
+      transition: color 0.1s;
+
+      &:hover {
+        color: #f44336;
+      }
+    }
+  }
+}

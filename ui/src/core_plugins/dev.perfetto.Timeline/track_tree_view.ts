@@ -66,6 +66,7 @@ import {
   wheelNavigationInteraction,
 } from './timeline_interactions';
 import {TrackView} from './track_view';
+import {createOverlayInteractionZone} from './overlay_interactions';
 import {drawVerticalLineAtTime} from '../../base/vertical_line_helper';
 import {featureFlags} from '../../core/feature_flags';
 import {EmptyState} from '../../widgets/empty_state';
@@ -176,6 +177,7 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
   private canvasRect?: Rect2D;
   private currentSnapPoint?: SnapPoint;
   private snapEnabled = SNAP_ENABLED_DEFAULT;
+  private readonly overlayGesture = {active: false};
 
   constructor({attrs}: m.Vnode<TrackTreeViewAttrs>) {
     this.trace = attrs.trace;
@@ -483,7 +485,13 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
     this.drawHoveredCursorVertical(ctx, timescale, size);
     this.drawNoteVerticals(ctx, timescale, size);
     this.drawAreaSelection(ctx, timescale, size);
-    this.updateInteractions(timelineRect, timescale, size, renderedTracks);
+    this.updateInteractions(
+      timelineRect,
+      timescale,
+      size,
+      renderedTracks,
+      rootNode,
+    );
 
     this.trace.tracks.overlays.forEach((overlay) => {
       overlay.render(ctx, timescale, size, renderedTracks, colors, rootNode);
@@ -597,12 +605,23 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
     timescale: TimeScale,
     size: Size2D,
     renderedTracks: ReadonlyArray<TrackView>,
+    rootNode: TrackNode,
   ) {
     const trace = this.trace;
     const areaSelection =
       trace.selection.selection.kind === 'area' && trace.selection.selection;
 
+    const overlayZone = createOverlayInteractionZone({
+      overlays: trace.tracks.overlays,
+      timelineRect,
+      timescale,
+      tracks: renderedTracks,
+      rootNode,
+      gesture: this.overlayGesture,
+    });
+
     ensureExists(this.interactions).update([
+      overlayZone,
       shiftDragPanInteraction(trace, timelineRect, timescale),
       areaSelection !== false && {
         id: 'start-edit',

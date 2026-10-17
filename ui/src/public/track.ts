@@ -348,6 +348,27 @@ export interface TrackBounds {
   readonly verticalBounds: VerticalBounds;
 }
 
+/**
+ * Contextual information passed to pointer events routed to interactive overlays.
+ */
+export interface OverlayPointerEvent {
+  // CSS px in the same container pixel space as Overlay.render() and timescale:
+  // x and y are in the same coordinate space as the canvas container so that
+  // `timescale.pxToHpTime(ev.x)` is valid; y matches `TrackBounds.verticalBounds`.
+  readonly x: number;
+  readonly y: number;
+  readonly ts: time; // pxToHpTime(x).toTime()
+  readonly track?: TrackBounds; // track under the pointer, if any
+  readonly tracks: ReadonlyArray<TrackBounds>;
+  readonly timescale: TimeScale;
+  readonly rootNode: TrackNode;
+  readonly buttons: number; // MouseEvent.buttons
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+}
+
 export interface Overlay {
   render(
     ctx: CanvasRenderingContext2D,
@@ -357,4 +378,31 @@ export interface Overlay {
     theme: CanvasColors,
     rootNode: TrackNode,
   ): void;
+
+  /**
+   * Return true while this overlay wants pointer input (e.g. a drawing mode
+   * is active). While any registered overlay is interactive, the timeline's
+   * built-in gestures (area selection, shift-drag pan, selection-edge
+   * editing) are suppressed and pointer events are routed to the overlays
+   * in registration order. Built-in gestures are suppressed only while
+   * `isInteractive()` returns true.
+   */
+  isInteractive?(): boolean;
+
+  /**
+   * Called when a pointer down / drag start occurs while interactive.
+   */
+  onPointerDown?(ev: OverlayPointerEvent): void;
+
+  /**
+   * Called when the pointer moves during a drag while interactive.
+   * Note: onPointerMove is only delivered during a drag (no hover), as the
+   * underlying zone system does not dispatch hover move events.
+   */
+  onPointerMove?(ev: OverlayPointerEvent): void;
+
+  /**
+   * Called when a pointer up / drag end occurs while interactive.
+   */
+  onPointerUp?(ev: OverlayPointerEvent): void;
 }

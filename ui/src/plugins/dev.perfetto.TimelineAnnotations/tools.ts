@@ -118,7 +118,7 @@ export class ToolController {
   private readonly store: AnnotationStore;
   private readonly opts: ToolControllerOptions;
   private isDrawingModeActive: boolean = false;
-  private activeToolKind: ToolKind = 'select';
+  private activeToolKind: ToolKind = 'rect';
   private activeStrokeColor: string;
   private activeGesturePreview?: GesturePreview;
   private activeGestureState?: ActiveGesture;

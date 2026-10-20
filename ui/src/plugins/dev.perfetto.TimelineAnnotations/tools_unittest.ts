@@ -91,12 +91,30 @@ describe('TimelineAnnotations: tools.ts', () => {
     return {store, controller, requestRedraw, onAnnotationCreated};
   }
 
+  test('initial tool is rect and persists across drawingMode toggles', () => {
+    const {controller} = setupController();
+    expect(controller.tool).toBe('rect');
+    expect(controller.drawingMode).toBe(false);
+
+    controller.setDrawingMode(true);
+    expect(controller.tool).toBe('rect');
+
+    controller.setTool('pen');
+    expect(controller.tool).toBe('pen');
+
+    controller.setDrawingMode(false);
+    expect(controller.tool).toBe('pen');
+
+    controller.setDrawingMode(true);
+    expect(controller.tool).toBe('pen');
+  });
+
   test('does nothing when drawingMode is off', () => {
     const {store, controller, requestRedraw} = setupController();
     expect(controller.drawingMode).toBe(false);
     expect(controller.isInteractive()).toBe(false);
 
-    controller.setTool('rect');
+    controller.setTool('pen');
     controller.onPointerDown(
       createPointerEvent({posX: 100, posY: 120, buttons: 1}),
     );

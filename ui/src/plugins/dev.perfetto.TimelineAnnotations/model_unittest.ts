@@ -19,6 +19,7 @@ import {
   type RectAnnotation,
   AnnotationStore,
   fromSerialized,
+  normalizeColor,
   toSerialized,
 } from './model';
 
@@ -389,6 +390,37 @@ describe('model.ts', () => {
       store.replaceAll(nextList);
       expect(store.get('old-1')).toBeUndefined();
       expect(store.get('new-a')).toBeDefined();
+    });
+  });
+
+  describe('normalizeColor', () => {
+    test('normalizes named colors, hex variants, and rgb', () => {
+      expect(normalizeColor('red')).toBe('#e53935');
+      expect(normalizeColor('RED')).toBe('#e53935');
+      expect(normalizeColor('blue')).toBe('#1e88e5');
+      expect(normalizeColor('#f00')).toBe('#ff0000');
+      expect(normalizeColor('#0f0')).toBe('#00ff00');
+      expect(normalizeColor('#E53935')).toBe('#e53935');
+      expect(normalizeColor('e53935')).toBe('#e53935');
+      expect(normalizeColor('rgb(255, 0, 0)')).toBe('#ff0000');
+      expect(normalizeColor('unknown-color')).toBe('unknown-color');
+    });
+
+    test('AnnotationStore normalizes color on add and update', () => {
+      const store = new AnnotationStore();
+      const added = store.add({
+        kind: 'rect',
+        color: 'red',
+        anchor: {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['t'],
+        },
+      });
+      expect(added.color).toBe('#e53935');
+
+      const updated = store.update(added.id, {color: '#f00'});
+      expect(updated?.color).toBe('#ff0000');
     });
   });
 

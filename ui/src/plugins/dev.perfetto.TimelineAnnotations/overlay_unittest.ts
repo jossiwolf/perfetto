@@ -21,7 +21,7 @@ import type {CanvasColors} from '../../public/canvas_colors';
 import type {TrackBounds} from '../../public/track';
 import {TrackNode} from '../../public/workspace';
 import {AnnotationStore} from './model';
-import {AnnotationsOverlay} from './overlay';
+import {AnnotationsOverlay, colorWithAlpha} from './overlay';
 import {ToolController} from './tools';
 
 interface DrawCallRecord {
@@ -528,5 +528,118 @@ describe('TimelineAnnotations: overlay.ts', () => {
         item.args[3] === 100,
     );
     expect(moveStroke).toBeDefined();
+  });
+
+  test('colorWithAlpha handles named CSS colors and short hex without fallback', () => {
+    expect(colorWithAlpha('red', 0.12)).toBe('rgba(229, 57, 53, 0.12)');
+    expect(colorWithAlpha('#0f0', 0.5)).toBe('rgba(0, 255, 0, 0.5)');
+    expect(colorWithAlpha('#1e88e5', 0.2)).toBe('rgba(30, 136, 229, 0.2)');
+  });
+
+  test('each kind strokes and fills with the annotation color', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    // rect
+    store.add({
+      id: 'rect_test',
+      kind: 'rect',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+    // ellipse
+    store.add({
+      id: 'ellipse_test',
+      kind: 'ellipse',
+      color: '#43a047',
+      anchor: {
+        start: Time.fromRaw(200n),
+        end: Time.fromRaw(300n),
+        trackUris: ['track_1'],
+      },
+    });
+    // path
+    store.add({
+      id: 'path_test',
+      kind: 'path',
+      color: '#8e24aa',
+      points: [
+        {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.2},
+        {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.8},
+      ],
+    });
+    // label
+    store.add({
+      id: 'label_test',
+      kind: 'label',
+      color: '#fb8c00',
+      text: 'My Label',
+      position: {ts: Time.fromRaw(150n), trackUri: 'track_1', yFrac: 0.5},
+    });
+    // arrow
+    store.add({
+      id: 'arrow_test',
+      kind: 'arrow',
+      color: '#00897b',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(200n), trackUri: 'track_2', yFrac: 0.5},
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    // rect fills and strokes with #e53935
+    expect(
+      calls.some(
+        (c) =>
+          c.method === 'fillRect' && c.fillStyle === 'rgba(229, 57, 53, 0.12)',
+      ),
+    ).toBe(true);
+    expect(
+      calls.some(
+        (c) => c.method === 'strokeRect' && c.strokeStyle === '#e53935',
+      ),
+    ).toBe(true);
+
+    // ellipse fills and strokes with #43a047
+    expect(
+      calls.some(
+        (c) => c.method === 'fill' && c.fillStyle === 'rgba(67, 160, 71, 0.12)',
+      ),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.method === 'stroke' && c.strokeStyle === '#43a047'),
+    ).toBe(true);
+
+    // path strokes with #8e24aa
+    expect(
+      calls.some((c) => c.method === 'stroke' && c.strokeStyle === '#8e24aa'),
+    ).toBe(true);
+
+    // label fills with rgba and strokes with #fb8c00
+    expect(
+      calls.some(
+        (c) => c.method === 'fill' && c.fillStyle === 'rgba(251, 140, 0, 0.12)',
+      ),
+    ).toBe(true);
+    expect(
+      calls.some((c) => c.method === 'stroke' && c.strokeStyle === '#fb8c00'),
+    ).toBe(true);
+
+    // arrow strokes with #00897b
+    expect(
+      calls.some((c) => c.method === 'stroke' && c.strokeStyle === '#00897b'),
+    ).toBe(true);
   });
 });

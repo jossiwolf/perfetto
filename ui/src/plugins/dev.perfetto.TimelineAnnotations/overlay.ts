@@ -21,7 +21,7 @@ import type {
   TrackBounds,
 } from '../../public/track';
 import type {TrackNode} from '../../public/workspace';
-import type {AnnotationStore} from './model';
+import {type AnnotationStore, normalizeColor} from './model';
 import {
   type ResolvedTrackY,
   resolveArea,
@@ -42,9 +42,10 @@ export interface AnnotationsOverlayOptions {
   readonly trackExists?: (uri: string) => boolean;
 }
 
-function colorWithAlpha(color: string, alpha: number): string {
-  if (color.startsWith('#')) {
-    let hexString = color.slice(1);
+export function colorWithAlpha(color: string, alpha: number): string {
+  const normalized = normalizeColor(color);
+  if (normalized.startsWith('#')) {
+    let hexString = normalized.slice(1);
     if (hexString.length === 3) {
       hexString =
         hexString[0] +
@@ -542,7 +543,7 @@ export class AnnotationsOverlay implements Overlay {
               50,
             );
             ctx.font = '12px sans-serif';
-            ctx.fillStyle = theme.COLOR_BACKGROUND_SECONDARY;
+            ctx.fillStyle = colorWithAlpha(annotation.color, 0.12);
             ctx.strokeStyle = annotation.color;
             ctx.lineWidth = 1;
             drawRoundedRect(

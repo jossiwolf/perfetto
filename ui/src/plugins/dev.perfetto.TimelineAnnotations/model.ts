@@ -224,6 +224,80 @@ function deserializeArrowEndpoint(
   };
 }
 
+export function normalizeColor(input: string): string {
+  if (!input) return '#757575';
+  const trimmed = input.trim().toLowerCase();
+
+  const NAMED_COLORS: Record<string, string> = {
+    red: '#e53935',
+    orange: '#fb8c00',
+    yellow: '#fdd835',
+    green: '#43a047',
+    teal: '#00897b',
+    blue: '#1e88e5',
+    purple: '#8e24aa',
+    grey: '#757575',
+    gray: '#757575',
+    black: '#000000',
+    white: '#ffffff',
+    cyan: '#00ffff',
+    magenta: '#ff00ff',
+  };
+
+  if (NAMED_COLORS[trimmed] !== undefined) {
+    return NAMED_COLORS[trimmed];
+  }
+
+  // 3-digit hex without #
+  if (/^[0-9a-f]{3}$/.test(trimmed)) {
+    return `#${trimmed[0]}${trimmed[0]}${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}`;
+  }
+
+  // 6-digit hex without #
+  if (/^[0-9a-f]{6}$/.test(trimmed)) {
+    return `#${trimmed}`;
+  }
+
+  // 3-digit hex with #
+  if (/^#[0-9a-f]{3}$/.test(trimmed)) {
+    return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+  }
+
+  // 4-digit hex with # (#rgba -> #rrggbb)
+  if (/^#[0-9a-f]{4}$/.test(trimmed)) {
+    return `#${trimmed[1]}${trimmed[1]}${trimmed[2]}${trimmed[2]}${trimmed[3]}${trimmed[3]}`;
+  }
+
+  // 6-digit hex with #
+  if (/^#[0-9a-f]{6}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  // 8-digit hex with # (#rrggbbaa -> #rrggbb)
+  if (/^#[0-9a-f]{8}$/.test(trimmed)) {
+    return trimmed.substring(0, 7);
+  }
+
+  // rgb(r, g, b)
+  const rgbMatch = trimmed.match(
+    /^rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/,
+  );
+  if (rgbMatch) {
+    const r = Math.min(255, Math.max(0, parseInt(rgbMatch[1], 10)))
+      .toString(16)
+      .padStart(2, '0');
+    const g = Math.min(255, Math.max(0, parseInt(rgbMatch[2], 10)))
+      .toString(16)
+      .padStart(2, '0');
+    const b = Math.min(255, Math.max(0, parseInt(rgbMatch[3], 10)))
+      .toString(16)
+      .padStart(2, '0');
+    return `#${r}${g}${b}`;
+  }
+
+  return input;
+}
+
 function deserializeAnnotation(annotation: SerializedAnnotation): Annotation {
   const base = {
     id: annotation.id,
@@ -231,7 +305,7 @@ function deserializeAnnotation(annotation: SerializedAnnotation): Annotation {
     ...(annotation.description !== undefined
       ? {description: annotation.description}
       : {}),
-    color: annotation.color,
+    color: normalizeColor(annotation.color),
     ...(annotation.author !== undefined ? {author: annotation.author} : {}),
     createdAt: annotation.createdAt,
     updatedAt: annotation.updatedAt,
@@ -332,6 +406,7 @@ export class AnnotationStore {
 
     const completeAnnotation = {
       ...input,
+      color: normalizeColor(input.color),
       id: annotationId,
       createdAt,
       updatedAt,
@@ -349,10 +424,17 @@ export class AnnotationStore {
       return undefined;
     }
 
+    const normalizedPatch = {
+      ...patch,
+      ...(patch.color !== undefined
+        ? {color: normalizeColor(patch.color)}
+        : {}),
+    };
+
     this.pushUndoSnapshot();
     const updated = {
       ...existing,
-      ...patch,
+      ...normalizedPatch,
       id: existing.id,
       createdAt: existing.createdAt,
       updatedAt: patch.updatedAt ?? this.now(),

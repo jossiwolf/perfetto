@@ -21,7 +21,11 @@ import type {
   PathAnnotation,
   RectAnnotation,
 } from './model';
-import {annotationToRow, escapeSqlString} from './annotation_track';
+import {
+  annotationToRow,
+  escapeSqlString,
+  getAnnotationColorScheme,
+} from './annotation_track';
 
 describe('annotation_track', () => {
   describe('escapeSqlString', () => {
@@ -45,6 +49,21 @@ describe('annotation_track', () => {
 
     test('escapes quotes only', () => {
       expect(escapeSqlString("'''")).toBe("''''''''");
+    });
+  });
+
+  describe('getAnnotationColorScheme', () => {
+    test('uses row color to create matching color scheme', () => {
+      const scheme = getAnnotationColorScheme({
+        name: 'test slice',
+        color: '#e53935',
+      });
+      expect(scheme.base.cssString).toBe('rgb(229 57 53)');
+    });
+
+    test('falls back to slice name hashing when color is empty', () => {
+      const scheme = getAnnotationColorScheme({name: 'fallback slice'});
+      expect(scheme.base.cssString).toBeDefined();
     });
   });
 
@@ -255,7 +274,10 @@ describe('annotation_track', () => {
         id: 'arrow_a',
         kind: 'arrow',
         color: '#ff0000',
-        from: {kind: 'point', point: {ts: Time.fromRaw(100n), trackUri: 't1', yFrac: 0.5}},
+        from: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(100n), trackUri: 't1', yFrac: 0.5},
+        },
         to: {kind: 'annotation', id: 'arrow_b'},
         createdAt: 100,
         updatedAt: 100,
@@ -266,7 +288,10 @@ describe('annotation_track', () => {
         kind: 'arrow',
         color: '#00ff00',
         from: {kind: 'annotation', id: 'arrow_a'},
-        to: {kind: 'point', point: {ts: Time.fromRaw(500n), trackUri: 't2', yFrac: 0.5}},
+        to: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(500n), trackUri: 't2', yFrac: 0.5},
+        },
         createdAt: 100,
         updatedAt: 100,
       };

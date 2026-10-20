@@ -24,7 +24,7 @@ import {Switch} from '../../widgets/switch';
 import {TextInput} from '../../widgets/text_input';
 import {Chip} from '../../widgets/chip';
 import {Intent} from '../../widgets/common';
-import type {Annotation, AnnotationStore} from './model';
+import {type Annotation, type AnnotationStore, normalizeColor} from './model';
 import {exportAnnotations, importAnnotationsFromFile} from './persistence';
 import {type ToolKind, TOOL_KINDS, type ToolController} from './tools';
 import type {AnnotationsOverlay} from './overlay';
@@ -32,7 +32,10 @@ import {annotationToRow} from './annotation_track';
 
 export const ANNOTATIONS_TAB_URI = 'dev.perfetto.TimelineAnnotations#tab';
 
-export const PALETTE_COLORS: ReadonlyArray<{readonly label: string; readonly value: string}> = [
+export const PALETTE_COLORS: ReadonlyArray<{
+  readonly label: string;
+  readonly value: string;
+}> = [
   {label: 'Red', value: '#e53935'},
   {label: 'Orange', value: '#fb8c00'},
   {label: 'Yellow', value: '#fdd835'},
@@ -209,7 +212,9 @@ export class AnnotationsTab implements Tab {
           )
         : m(
             '.pf-timeline-annotations-list',
-            annotations.map((annotation) => this.renderAnnotationItem(annotation)),
+            annotations.map((annotation) =>
+              this.renderAnnotationItem(annotation),
+            ),
           ),
     );
   }
@@ -240,7 +245,7 @@ export class AnnotationsTab implements Tab {
       m(
         Select,
         {
-          value: this.tools.color,
+          value: normalizeColor(this.tools.color),
           onchange: (event: Event) => {
             const target = event.target as HTMLSelectElement;
             this.tools.setColor(target.value);
@@ -249,6 +254,11 @@ export class AnnotationsTab implements Tab {
         PALETTE_COLORS.map((paletteColor) =>
           m('option', {value: paletteColor.value}, paletteColor.label),
         ),
+        !PALETTE_COLORS.some(
+          (paletteColor) =>
+            paletteColor.value.toLowerCase() ===
+            normalizeColor(this.tools.color).toLowerCase(),
+        ) && m('option', {value: this.tools.color}, 'Custom'),
       ),
       m(
         ButtonBar,
@@ -404,15 +414,18 @@ export class AnnotationsTab implements Tab {
   }
 
   private renderColorSelect(annotation: Annotation): m.Children {
-    const isCustom = !PALETTE_COLORS.some(
-      (paletteColor) => paletteColor.value === annotation.color,
+    const normalized = normalizeColor(annotation.color);
+    const matchesPalette = PALETTE_COLORS.some(
+      (paletteColor) =>
+        paletteColor.value.toLowerCase() === normalized.toLowerCase(),
     );
 
     return m(
       Select,
       {
+        key: `color-select-${annotation.id}`,
         className: 'pf-timeline-annotations-color-select',
-        value: annotation.color,
+        value: matchesPalette ? normalized : annotation.color,
         onchange: (event: Event) => {
           const target = event.target as HTMLSelectElement;
           this.store.update(annotation.id, {color: target.value});
@@ -421,13 +434,14 @@ export class AnnotationsTab implements Tab {
       PALETTE_COLORS.map((paletteColor) =>
         m('option', {value: paletteColor.value}, paletteColor.label),
       ),
-      isCustom && m('option', {value: annotation.color}, 'Custom'),
+      !matchesPalette && m('option', {value: annotation.color}, 'Custom'),
     );
   }
 
-  private renderBadge(
-    renderInfo?: {readonly status: string; readonly missing: ReadonlyArray<string>},
-  ): m.Children {
+  private renderBadge(renderInfo?: {
+    readonly status: string;
+    readonly missing: ReadonlyArray<string>;
+  }): m.Children {
     if (!renderInfo) {
       return null;
     }

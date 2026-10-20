@@ -18,8 +18,15 @@ import {TrackNode} from '../../public/workspace';
 import {SourceDataset} from '../../trace_processor/dataset';
 import {LONG, NUM, STR} from '../../trace_processor/query_result';
 import {SliceTrack} from '../../components/tracks/slice_track';
-import {getColorForSlice} from '../../components/colorizer';
-import type {Annotation, AnnotationStore, ArrowEndpoint} from './model';
+import {getColorForSlice, makeColorScheme} from '../../components/colorizer';
+import {HSLColor} from '../../base/color';
+import type {ColorScheme} from '../../base/color_scheme';
+import {
+  type Annotation,
+  type AnnotationStore,
+  type ArrowEndpoint,
+  normalizeColor,
+} from './model';
 
 export const ANNOTATION_TRACK_URI = 'dev.perfetto.TimelineAnnotations#track';
 
@@ -143,7 +150,9 @@ export function annotationToRow(
       } else if (fromRange !== undefined) {
         start = fromRange.start;
         dur =
-          fromRange.end >= fromRange.start ? fromRange.end - fromRange.start : 0n;
+          fromRange.end >= fromRange.start
+            ? fromRange.end - fromRange.start
+            : 0n;
       } else if (toRange !== undefined) {
         start = toRange.start;
         dur = toRange.end >= toRange.start ? toRange.end - toRange.start : 0n;
@@ -153,6 +162,19 @@ export function annotationToRow(
       return {id, ts: start, dur, name, kind, color, description};
     }
   }
+}
+
+export function getAnnotationColorScheme(row: {
+  color?: string;
+  name: string;
+}): ColorScheme {
+  if (row.color) {
+    const hex = normalizeColor(row.color);
+    if (hex.startsWith('#') && hex.length === 7) {
+      return makeColorScheme(new HSLColor(hex));
+    }
+  }
+  return getColorForSlice(row.name);
 }
 
 export class AnnotationTrack {
@@ -200,7 +222,7 @@ export class AnnotationTrack {
       uri: ANNOTATION_TRACK_URI,
       dataset,
       getKey: () => String(this.version),
-      colorizer: (row) => getColorForSlice(row.color || row.name),
+      colorizer: (row) => getAnnotationColorScheme(row),
       detailsPanel: (row) => ({
         render: () =>
           m(

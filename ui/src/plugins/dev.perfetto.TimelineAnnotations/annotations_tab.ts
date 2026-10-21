@@ -16,10 +16,14 @@ import m from 'mithril';
 import {Time, type time} from '../../base/time';
 import type {Tab} from '../../public/tab';
 import type {Trace} from '../../public/trace';
-import {Button, ButtonBar} from '../../widgets/button';
+import {
+  Button,
+  ButtonBar,
+  ButtonGroup,
+  ButtonVariant,
+} from '../../widgets/button';
 import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
-import {Select} from '../../widgets/select';
 import {Switch} from '../../widgets/switch';
 import {TextInput} from '../../widgets/text_input';
 import {Chip} from '../../widgets/chip';
@@ -37,7 +41,7 @@ export const PALETTE_COLORS: ReadonlyArray<{
   readonly value: string;
 }> = [
   {label: 'Red', value: '#e53935'},
-  {label: 'Orange', value: '#fb8c00'},
+  {label: 'Orange', value: '#ff6d00'},
   {label: 'Yellow', value: '#fdd835'},
   {label: 'Green', value: '#43a047'},
   {label: 'Teal', value: '#00897b'},
@@ -46,18 +50,127 @@ export const PALETTE_COLORS: ReadonlyArray<{
   {label: 'Grey', value: '#757575'},
 ];
 
+export function getToolIcon(tool: ToolKind): string {
+  switch (tool) {
+    case 'select':
+      return 'near_me';
+    case 'rect':
+      return 'crop_square';
+    case 'ellipse':
+      return 'circle';
+    case 'pen':
+      return 'draw';
+    case 'arrow':
+      return 'arrow_forward';
+    case 'label':
+      return 'text_fields';
+  }
+}
+
+export function getToolLabel(tool: ToolKind): string {
+  switch (tool) {
+    case 'select':
+      return 'Select';
+    case 'rect':
+      return 'Rectangle';
+    case 'ellipse':
+      return 'Ellipse';
+    case 'pen':
+      return 'Pen';
+    case 'arrow':
+      return 'Arrow';
+    case 'label':
+      return 'Label';
+  }
+}
+
 function getKindIcon(kind: Annotation['kind']): string {
   switch (kind) {
     case 'rect':
       return 'crop_square';
     case 'ellipse':
-      return 'panorama_fish_eye';
+      return 'circle';
     case 'label':
       return 'text_fields';
     case 'path':
-      return 'gesture';
+      return 'draw';
     case 'arrow':
       return 'arrow_forward';
+  }
+}
+
+export interface ColorSwatchesAttrs {
+  readonly value: string;
+  readonly onChange: (color: string) => void;
+  readonly label?: string;
+  readonly tooltip?: string;
+}
+
+export class ColorSwatches implements m.ClassComponent<ColorSwatchesAttrs> {
+  view({attrs}: m.CVnode<ColorSwatchesAttrs>) {
+    const {value, onChange, label, tooltip} = attrs;
+    const normalized = normalizeColor(value).toLowerCase();
+    const isPaletteMatch = PALETTE_COLORS.some(
+      (paletteColor) =>
+        normalizeColor(paletteColor.value).toLowerCase() === normalized,
+    );
+
+    const swatchElements = PALETTE_COLORS.map((paletteColor) => {
+      const isActive =
+        normalizeColor(paletteColor.value).toLowerCase() === normalized;
+      return m('button.pf-timeline-annotations__swatch', {
+        key: paletteColor.value,
+        type: 'button',
+        className: isActive ? 'pf-timeline-annotations__swatch--active' : '',
+        style: {backgroundColor: paletteColor.value},
+        title: paletteColor.label,
+        onclick: (event: MouseEvent) => {
+          event.stopPropagation();
+          onChange(paletteColor.value);
+        },
+      });
+    });
+
+    const customInputHex = /^#[0-9a-f]{6}$/i.test(normalized)
+      ? normalized
+      : '#757575';
+    swatchElements.push(
+      m(
+        'label.pf-timeline-annotations__swatch.pf-timeline-annotations__swatch--custom',
+        {
+          key: 'custom',
+          className: !isPaletteMatch
+            ? 'pf-timeline-annotations__swatch--active'
+            : '',
+          style: !isPaletteMatch ? {backgroundColor: normalized} : undefined,
+          title: !isPaletteMatch
+            ? `Custom color (${normalized})`
+            : 'Custom color...',
+          onclick: (event: MouseEvent) => {
+            event.stopPropagation();
+          },
+        },
+        m('input[type=color]', {
+          value: customInputHex,
+          oninput: (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            onChange(target.value);
+          },
+          onchange: (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            onChange(target.value);
+          },
+        }),
+      ),
+    );
+
+    const children: m.Children = [];
+    if (label) {
+      children.push(m('span.pf-timeline-annotations__label', label));
+    }
+    children.push(m('.pf-timeline-annotations__swatch-row', swatchElements));
+
+    return m('.pf-timeline-annotations__swatches', {title: tooltip}, children);
   }
 }
 
@@ -92,7 +205,7 @@ function getTrackUrisForAnnotation(
     case 'label':
       return [annotation.position.trackUri];
     case 'path':
-      return annotation.points.map((p) => p.trackUri);
+      return annotation.points.map((point) => point.trackUri);
     case 'arrow': {
       const uris: string[] = [];
       if (annotation.from.kind === 'point') {
@@ -196,116 +309,136 @@ export class AnnotationsTab implements Tab {
         return 0;
       });
 
-    return m(
-      '.pf-timeline-annotations-tab',
-      this.renderToolbar(annotations.length),
-      this.pendingClearConfirm && this.renderClearConfirmBanner(),
-      annotations.length === 0
-        ? m(
-            EmptyState,
-            {
-              icon: 'draw',
-              title: 'No annotations yet',
-              fillHeight: true,
-            },
-            'Turn on drawing mode or select an area on the timeline to create annotations.',
-          )
-        : m(
-            '.pf-timeline-annotations-list',
-            annotations.map((annotation) =>
-              this.renderAnnotationItem(annotation),
-            ),
+    const children: m.Children = [this.renderToolbar(annotations.length)];
+    if (this.pendingClearConfirm) {
+      children.push(this.renderClearConfirmBanner());
+    }
+    if (annotations.length === 0) {
+      children.push(
+        m(
+          EmptyState,
+          {
+            icon: 'draw',
+            title: 'No annotations yet',
+            fillHeight: true,
+          },
+          'Turn on drawing mode or select an area on the timeline to create annotations.',
+        ),
+      );
+    } else {
+      children.push(
+        m(
+          '.pf-timeline-annotations-list',
+          annotations.map((annotation) =>
+            this.renderAnnotationItem(annotation),
           ),
-    );
+        ),
+      );
+    }
+
+    return m('.pf-timeline-annotations-tab', children);
   }
 
   private renderToolbar(count: number): m.Children {
     return m(
-      '.pf-timeline-annotations-toolbar',
-      m(Switch, {
-        label: 'Drawing mode',
-        checked: this.tools.drawingMode,
-        onchange: () => {
-          this.tools.toggleDrawingMode();
-        },
-      }),
+      '.pf-timeline-annotations__toolbar.pf-timeline-annotations-toolbar',
       m(
-        Select,
-        {
-          value: this.tools.tool,
-          onchange: (event: Event) => {
-            const target = event.target as HTMLSelectElement;
-            this.tools.setTool(target.value as ToolKind);
+        '.pf-timeline-annotations__group',
+        m(Switch, {
+          label: 'Drawing mode',
+          title: 'Toggle drawing mode (Mod+Shift+D)',
+          checked: this.tools.drawingMode,
+          onchange: () => {
+            this.tools.toggleDrawingMode();
           },
-        },
-        TOOL_KINDS.map((toolKind) =>
-          m('option', {value: toolKind}, toolKind.toUpperCase()),
+        }),
+      ),
+      m(
+        '.pf-timeline-annotations__group',
+        m('span.pf-timeline-annotations__label', 'Tool:'),
+        m(
+          ButtonGroup,
+          {className: 'pf-timeline-annotations__tools'},
+          TOOL_KINDS.map((toolKind) => {
+            const isActive = this.tools.tool === toolKind;
+            const label = getToolLabel(toolKind);
+            return m(Button, {
+              'key': toolKind,
+              'icon': getToolIcon(toolKind),
+              'active': isActive,
+              'intent': isActive ? Intent.Primary : Intent.None,
+              'variant': ButtonVariant.Filled,
+              'compact': true,
+              'title': `${label} tool`,
+              'className': 'pf-timeline-annotations__tool-button',
+              'data-tool': toolKind,
+              'onclick': () => {
+                this.tools.setTool(toolKind);
+              },
+            });
+          }),
         ),
       ),
       m(
-        Select,
-        {
-          value: normalizeColor(this.tools.color),
-          onchange: (event: Event) => {
-            const target = event.target as HTMLSelectElement;
-            this.tools.setColor(target.value);
+        '.pf-timeline-annotations__group',
+        m(ColorSwatches, {
+          label: 'New annotation color:',
+          tooltip: 'Color used for annotations you create next',
+          value: this.tools.color,
+          onChange: (color: string) => {
+            this.tools.setColor(color);
           },
-        },
-        PALETTE_COLORS.map((paletteColor) =>
-          m('option', {value: paletteColor.value}, paletteColor.label),
+        }),
+      ),
+      m(
+        '.pf-timeline-annotations__group.pf-timeline-annotations__group--right',
+        m(
+          ButtonBar,
+          m(Button, {
+            icon: 'undo',
+            title: 'Undo',
+            disabled: !this.store.canUndo,
+            onclick: () => this.store.undo(),
+          }),
+          m(Button, {
+            icon: 'redo',
+            title: 'Redo',
+            disabled: !this.store.canRedo,
+            onclick: () => this.store.redo(),
+          }),
         ),
-        !PALETTE_COLORS.some(
-          (paletteColor) =>
-            paletteColor.value.toLowerCase() ===
-            normalizeColor(this.tools.color).toLowerCase(),
-        ) && m('option', {value: this.tools.color}, 'Custom'),
-      ),
-      m(
-        ButtonBar,
-        m(Button, {
-          icon: 'undo',
-          title: 'Undo',
-          disabled: !this.store.canUndo,
-          onclick: () => this.store.undo(),
-        }),
-        m(Button, {
-          icon: 'redo',
-          title: 'Redo',
-          disabled: !this.store.canRedo,
-          onclick: () => this.store.redo(),
-        }),
-      ),
-      m(
-        ButtonBar,
-        m(Button, {
-          icon: 'file_download',
-          label: 'Export',
-          title: 'Export annotations to JSON',
-          onclick: () => {
-            exportAnnotations(this.trace, this.store);
-          },
-        }),
-        m(Button, {
-          icon: 'file_upload',
-          label: 'Import',
-          title: 'Import annotations from JSON file',
-          onclick: () => {
-            importAnnotationsFromFile(this.store);
-          },
-        }),
-        m(Button, {
-          icon: 'delete_sweep',
-          label: 'Clear all',
-          title: 'Remove all annotations',
-          disabled: count === 0,
-          onclick: () => {
-            this.pendingClearConfirm = true;
-          },
-        }),
-      ),
-      m(
-        '.pf-timeline-annotations-count',
-        `${count} annotation${count === 1 ? '' : 's'}`,
+        m(
+          ButtonBar,
+          m(Button, {
+            icon: 'file_download',
+            label: 'Export',
+            title: 'Export annotations to JSON',
+            onclick: () => {
+              exportAnnotations(this.trace, this.store);
+            },
+          }),
+          m(Button, {
+            icon: 'file_upload',
+            label: 'Import',
+            title: 'Import annotations from JSON file',
+            onclick: () => {
+              importAnnotationsFromFile(this.store);
+            },
+          }),
+          m(Button, {
+            icon: 'delete_sweep',
+            label: 'Clear all',
+            title: 'Remove all annotations',
+            disabled: count === 0,
+            onclick: () => {
+              this.pendingClearConfirm = true;
+            },
+          }),
+        ),
+        m(
+          '.pf-timeline-annotations-count',
+          `${count} annotation${count === 1 ? '' : 's'}`,
+        ),
       ),
     );
   }
@@ -338,6 +471,8 @@ export class AnnotationsTab implements Tab {
     const isSelected = this.store.selectedId === annotation.id;
     const isHidden = this.store.isHidden(annotation.id);
     const renderInfo = this.overlay.lastRender.get(annotation.id);
+    const kindLabel =
+      annotation.kind.charAt(0).toUpperCase() + annotation.kind.slice(1);
 
     return m(
       '.pf-timeline-annotations-item',
@@ -355,6 +490,7 @@ export class AnnotationsTab implements Tab {
       },
       m(
         '.pf-timeline-annotations-icon',
+        {title: `${kindLabel} annotation`},
         m(Icon, {icon: getKindIcon(annotation.kind)}),
       ),
       m(TextInput, {
@@ -377,7 +513,12 @@ export class AnnotationsTab implements Tab {
           this.store.update(annotation.id, {description: value});
         },
       }),
-      this.renderColorSelect(annotation),
+      m(ColorSwatches, {
+        value: annotation.color,
+        onChange: (color: string) => {
+          this.store.update(annotation.id, {color});
+        },
+      }),
       this.renderBadge(renderInfo),
       m(
         '.pf-timeline-annotations-actions',
@@ -410,30 +551,6 @@ export class AnnotationsTab implements Tab {
           },
         }),
       ),
-    );
-  }
-
-  private renderColorSelect(annotation: Annotation): m.Children {
-    const normalized = normalizeColor(annotation.color);
-    const matchesPalette = PALETTE_COLORS.some(
-      (paletteColor) =>
-        paletteColor.value.toLowerCase() === normalized.toLowerCase(),
-    );
-
-    return m(
-      Select,
-      {
-        className: 'pf-timeline-annotations-color-select',
-        value: matchesPalette ? normalized : annotation.color,
-        onchange: (event: Event) => {
-          const target = event.target as HTMLSelectElement;
-          this.store.update(annotation.id, {color: target.value});
-        },
-      },
-      PALETTE_COLORS.map((paletteColor) =>
-        m('option', {value: paletteColor.value}, paletteColor.label),
-      ),
-      !matchesPalette && m('option', {value: annotation.color}, 'Custom'),
     );
   }
 

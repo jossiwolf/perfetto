@@ -14,11 +14,7 @@
 
 import {describe, expect, test, vi} from 'vitest';
 import {Time} from '../../base/time';
-import {
-  type RectAnnotation,
-  AnnotationStore,
-  toSerialized,
-} from './model';
+import {type RectAnnotation, AnnotationStore, toSerialized} from './model';
 import {
   AUTOSAVE_INDEX_KEY,
   AutosaveStore,
@@ -98,9 +94,7 @@ describe('persistence', () => {
 
       // Entries 5..24 should be present
       for (let index = 5; index < 25; index += 1) {
-        expect(
-          storage.getItem(getAutosaveKey(`uuid_${index}`)),
-        ).not.toBeNull();
+        expect(storage.getItem(getAutosaveKey(`uuid_${index}`))).not.toBeNull();
       }
 
       // Most recent should be at the front
@@ -132,18 +126,29 @@ describe('persistence', () => {
 
       // Pre-fill with 5 items
       for (let i = 0; i < 5; i += 1) {
-        storage.setItem(getAutosaveKey(`existing_${i}`), JSON.stringify({version: 1, annotations: []}));
+        storage.setItem(
+          getAutosaveKey(`existing_${i}`),
+          JSON.stringify({version: 1, annotations: []}),
+        );
       }
       storage.setItem(
         AUTOSAVE_INDEX_KEY,
-        JSON.stringify(['existing_4', 'existing_3', 'existing_2', 'existing_1', 'existing_0']),
+        JSON.stringify([
+          'existing_4',
+          'existing_3',
+          'existing_2',
+          'existing_1',
+          'existing_0',
+        ]),
       );
 
       autosave.save('uuid_new', []);
 
       expect(evictionsCount).toBe(K);
       expect(storage.getItem(getAutosaveKey('uuid_new'))).not.toBeNull();
-      const indexList: string[] = JSON.parse(storage.getItem(AUTOSAVE_INDEX_KEY)!);
+      const indexList: string[] = JSON.parse(
+        storage.getItem(AUTOSAVE_INDEX_KEY)!,
+      );
       expect(indexList[0]).toBe('uuid_new');
       expect(indexList).not.toContain('existing_0');
       expect(indexList).not.toContain('existing_1');

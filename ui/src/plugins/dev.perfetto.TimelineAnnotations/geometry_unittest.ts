@@ -28,12 +28,20 @@ import {
 describe('geometry.ts', () => {
   describe('distancePointToSegment', () => {
     test('computes distance to collinear point', () => {
-      const dist = distancePointToSegment({x: 5, y: 0}, {x: 0, y: 0}, {x: 10, y: 0});
+      const dist = distancePointToSegment(
+        {x: 5, y: 0},
+        {x: 0, y: 0},
+        {x: 10, y: 0},
+      );
       expect(dist).toBeCloseTo(0);
     });
 
     test('computes perpendicular distance', () => {
-      const dist = distancePointToSegment({x: 5, y: 4}, {x: 0, y: 0}, {x: 10, y: 0});
+      const dist = distancePointToSegment(
+        {x: 5, y: 4},
+        {x: 0, y: 0},
+        {x: 10, y: 0},
+      );
       expect(dist).toBeCloseTo(4);
     });
 
@@ -105,7 +113,10 @@ describe('geometry.ts', () => {
 
   describe('simplifyPath (RDP)', () => {
     test('points <= 2 or epsilon <= 0 returned as copy', () => {
-      const pts = [{x: 0, y: 0}, {x: 10, y: 10}];
+      const pts = [
+        {x: 0, y: 0},
+        {x: 10, y: 10},
+      ];
       expect(simplifyPath(pts, 1)).toEqual(pts);
       expect(simplifyPath(pts, 0)).toEqual(pts);
     });
@@ -119,7 +130,10 @@ describe('geometry.ts', () => {
         {x: 10, y: 10},
       ];
       const simplified = simplifyPath(pts, 0.1);
-      expect(simplified).toEqual([{x: 0, y: 0}, {x: 10, y: 10}]);
+      expect(simplified).toEqual([
+        {x: 0, y: 0},
+        {x: 10, y: 10},
+      ]);
     });
 
     test('preserves corner point exceeding epsilon', () => {
@@ -148,7 +162,11 @@ describe('geometry.ts', () => {
       });
 
       // All identical points (degenerate bbox)
-      const degenerate = [{x: 5, y: 5}, {x: 5, y: 5}, {x: 5, y: 5}];
+      const degenerate = [
+        {x: 5, y: 5},
+        {x: 5, y: 5},
+        {x: 5, y: 5},
+      ];
       expect(recognizeShape(degenerate).kind).toBe('none');
     });
 
@@ -209,7 +227,14 @@ describe('geometry.ts', () => {
   });
 
   describe('Hit tests', () => {
-    const rect = {left: 10, top: 20, right: 110, bottom: 80, width: 100, height: 60};
+    const rect = {
+      left: 10,
+      top: 20,
+      right: 110,
+      bottom: 80,
+      width: 100,
+      height: 60,
+    };
 
     test('hitTestRect outline and fill', () => {
       // Top edge
@@ -234,8 +259,12 @@ describe('geometry.ts', () => {
     });
 
     test('hitTestSegment', () => {
-      expect(hitTestSegment({x: 5, y: 2}, {x: 0, y: 0}, {x: 10, y: 0}, 3)).toBe(true);
-      expect(hitTestSegment({x: 5, y: 5}, {x: 0, y: 0}, {x: 10, y: 0}, 3)).toBe(false);
+      expect(hitTestSegment({x: 5, y: 2}, {x: 0, y: 0}, {x: 10, y: 0}, 3)).toBe(
+        true,
+      );
+      expect(hitTestSegment({x: 5, y: 5}, {x: 0, y: 0}, {x: 10, y: 0}, 3)).toBe(
+        false,
+      );
     });
 
     test('hitTestPolyline', () => {

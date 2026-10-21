@@ -107,7 +107,9 @@ interface ActiveGesture {
   isDrag: boolean;
 }
 
-const DEFAULT_TOOL_COLOR = '#ff6d00';
+import {PALETTE_COLORS} from './annotations_tab';
+
+export const DEFAULT_TOOL_COLOR = PALETTE_COLORS[1].value;
 const MIN_DRAG_DISTANCE_PX = 3;
 const HIT_TEST_TOLERANCE_PX = 5;
 const MAX_PATH_POINTS_COUNT = 256;

@@ -23,14 +23,16 @@ describe('schema.ts', () => {
   describe('SerializedTimestampSchema', () => {
     test('accepts valid decimal int64 strings', () => {
       expect(SerializedTimestampSchema.parse('0')).toEqual('0');
-      expect(SerializedTimestampSchema.parse('1234567890')).toEqual('1234567890');
+      expect(SerializedTimestampSchema.parse('1234567890')).toEqual(
+        '1234567890',
+      );
       expect(SerializedTimestampSchema.parse('-1')).toEqual('-1');
-      expect(
-        SerializedTimestampSchema.parse('9223372036854775807'),
-      ).toEqual('9223372036854775807');
-      expect(
-        SerializedTimestampSchema.parse('-9223372036854775808'),
-      ).toEqual('-9223372036854775808');
+      expect(SerializedTimestampSchema.parse('9223372036854775807')).toEqual(
+        '9223372036854775807',
+      );
+      expect(SerializedTimestampSchema.parse('-9223372036854775808')).toEqual(
+        '-9223372036854775808',
+      );
     });
 
     test('rejects non-int64 decimal strings', () => {

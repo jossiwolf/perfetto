@@ -143,10 +143,7 @@ export function resolveArea(
   anchor: AreaAnchor,
   tracks: ReadonlyArray<TrackBounds>,
   rootNode: TrackNode,
-  resolver?: (
-    uri: string,
-    name?: string,
-  ) => ResolvedTrackY | undefined,
+  resolver?: (uri: string, name?: string) => ResolvedTrackY | undefined,
 ): ResolvedArea | undefined {
   if (anchor.trackUris.length === 0) {
     return undefined;
@@ -196,19 +193,11 @@ export function resolvePoint(
   point: AnchoredPoint,
   tracks: ReadonlyArray<TrackBounds>,
   rootNode: TrackNode,
-  resolver?: (
-    uri: string,
-    name?: string,
-  ) => ResolvedTrackY | undefined,
+  resolver?: (uri: string, name?: string) => ResolvedTrackY | undefined,
 ): ResolvedPoint | undefined {
   const resolution = resolver
     ? resolver(point.trackUri, point.trackName)
-    : resolveTrackY(
-        point.trackUri,
-        point.trackName,
-        tracks,
-        rootNode,
-      );
+    : resolveTrackY(point.trackUri, point.trackName, tracks, rootNode);
   if (resolution === undefined) {
     return undefined;
   }

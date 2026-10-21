@@ -117,7 +117,11 @@ describe('anchor.ts', () => {
         visibleTracks,
         rootNode,
       );
-      expect(startsWithResult).toEqual({top: 200, bottom: 250, status: 'fuzzy'});
+      expect(startsWithResult).toEqual({
+        top: 200,
+        bottom: 250,
+        status: 'fuzzy',
+      });
 
       // includes match when exact and startsWith not found
       const includesResult = resolveTrackY(

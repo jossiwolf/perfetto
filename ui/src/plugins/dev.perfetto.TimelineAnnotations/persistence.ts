@@ -33,10 +33,7 @@ export function getAutosaveKey(uuid: string): string {
   return `dev.perfetto.TimelineAnnotations#${uuid}`;
 }
 
-export function wireStorage(
-  trace: Trace,
-  store: AnnotationStore,
-): Disposable {
+export function wireStorage(trace: Trace, store: AnnotationStore): Disposable {
   const storage = trace.registerStorage({
     id: ANNOTATIONS_STORAGE_ID,
     schema: SerializedAnnotationsSchema,
@@ -65,7 +62,9 @@ export class AutosaveStore {
   constructor(customStorage?: globalThis.Storage) {
     this.storage =
       customStorage ??
-      (typeof window !== 'undefined' ? window.localStorage : ({} as globalThis.Storage));
+      (typeof window !== 'undefined'
+        ? window.localStorage
+        : ({} as globalThis.Storage));
   }
 
   load(uuid: string): Annotation[] | undefined {
@@ -141,7 +140,10 @@ export class AutosaveStore {
       }
 
       if (!writeSuccess) {
-        console.warn('Failed to autosave annotations for trace (quota exceeded)', uuid);
+        console.warn(
+          'Failed to autosave annotations for trace (quota exceeded)',
+          uuid,
+        );
         return;
       }
 
@@ -172,7 +174,11 @@ export class AutosaveStore {
         }
       }
     } catch (err) {
-      console.warn('Failed to clear autosaved annotations for trace', uuid, err);
+      console.warn(
+        'Failed to clear autosaved annotations for trace',
+        uuid,
+        err,
+      );
     }
   }
 }
@@ -202,7 +208,11 @@ export function importAnnotationsFromFile(store: AnnotationStore): void {
 
   input.addEventListener('change', async (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLInputElement) || !target.files || target.files.length === 0) {
+    if (
+      !(target instanceof HTMLInputElement) ||
+      !target.files ||
+      target.files.length === 0
+    ) {
       return;
     }
     const file = target.files[0];
@@ -255,7 +265,8 @@ export function registerAutosaveSetting(trace: Trace): Setting<boolean> {
   return trace.settings.register({
     id: AUTOSAVE_SETTING_ID,
     name: 'Autosave Timeline Annotations',
-    description: 'Automatically save timeline annotations to local browser storage',
+    description:
+      'Automatically save timeline annotations to local browser storage',
     schema: z.boolean(),
     defaultValue: true,
   });

@@ -128,8 +128,7 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
     });
 
     for (const toolKind of TOOL_KINDS) {
-      const capitalized =
-        toolKind.charAt(0).toUpperCase() + toolKind.slice(1);
+      const capitalized = toolKind.charAt(0).toUpperCase() + toolKind.slice(1);
       trace.commands.registerCommand({
         id: `${TimelineAnnotationsPlugin.id}#Tool${capitalized}`,
         name: `Timeline Annotations: Select ${capitalized} tool`,

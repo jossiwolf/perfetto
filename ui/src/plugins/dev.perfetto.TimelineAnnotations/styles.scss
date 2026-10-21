@@ -21,20 +21,122 @@
   box-sizing: border-box;
 }
 
+.pf-timeline-annotations__toolbar,
 .pf-timeline-annotations-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 16px;
+  padding: 8px 12px;
+  background-color: var(--pf-color-background-secondary);
   border-bottom: 1px solid var(--pf-color-border);
   box-sizing: border-box;
+}
+
+.pf-timeline-annotations__group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  &--right {
+    margin-left: auto;
+  }
+}
+
+.pf-timeline-annotations__label {
+  font-size: var(--pf-font-size-s);
+  color: var(--pf-color-text-muted);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.pf-timeline-annotations__tools {
+  .pf-button {
+    min-width: 28px;
+    height: 28px;
+    padding: 2px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    &.pf-active {
+      background-color: var(--pf-color-primary);
+      color: var(--pf-color-text-on-primary, #ffffff);
+    }
+  }
+}
+
+.pf-timeline-annotations__swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pf-timeline-annotations__swatch-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pf-timeline-annotations__swatch {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--pf-color-border);
+  cursor: pointer;
+  padding: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    transform 0.1s ease,
+    box-shadow 0.1s ease;
+
+  &:hover {
+    transform: scale(1.15);
+  }
+
+  &--active {
+    outline: 2px solid var(--pf-color-accent);
+    outline-offset: 1px;
+    box-shadow: 0 0 0 1px var(--pf-color-background, #ffffff);
+  }
+
+  &--custom {
+    background: conic-gradient(
+      from 180deg,
+      #e53935,
+      #ff6d00,
+      #fdd835,
+      #43a047,
+      #00897b,
+      #1e88e5,
+      #8e24aa,
+      #e53935
+    );
+    overflow: hidden;
+
+    input[type="color"] {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      border: none;
+      padding: 0;
+      margin: 0;
+    }
+  }
 }
 
 .pf-timeline-annotations-count {
   font-size: var(--pf-font-size-s);
   color: var(--pf-color-text-muted);
-  margin-left: auto;
+  white-space: nowrap;
 }
 
 .pf-timeline-annotations-list {
@@ -83,11 +185,6 @@
 .pf-timeline-annotations-desc-input {
   flex: 2;
   min-width: 160px;
-}
-
-.pf-timeline-annotations-color-select {
-  width: 90px;
-  flex-shrink: 0;
 }
 
 .pf-timeline-annotations-badge {

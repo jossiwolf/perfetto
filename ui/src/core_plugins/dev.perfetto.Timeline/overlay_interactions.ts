@@ -112,8 +112,8 @@ export function createOverlayInteractionZone(
 
     const shiftKey = Boolean(
       typeof e === 'object' &&
-        e !== null &&
-        (e as {shiftKey?: boolean}).shiftKey,
+      e !== null &&
+      (e as {shiftKey?: boolean}).shiftKey,
     );
     const altKey = Boolean(
       typeof e === 'object' && e !== null && (e as {altKey?: boolean}).altKey,

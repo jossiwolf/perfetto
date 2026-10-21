@@ -31,10 +31,7 @@ export interface RecognizedShape {
   readonly confidence: number;
 }
 
-export function distancePointToPoint(
-  first: Point2D,
-  second: Point2D,
-): number {
+export function distancePointToPoint(first: Point2D, second: Point2D): number {
   return Math.hypot(first.x - second.x, first.y - second.y);
 }
 

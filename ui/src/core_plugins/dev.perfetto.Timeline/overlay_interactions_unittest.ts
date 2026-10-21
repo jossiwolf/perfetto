@@ -98,9 +98,7 @@ describe('overlay_interactions', () => {
       onPointerUp,
     };
 
-    const zone = createOverlayInteractionZone(
-      createArgs([interactiveOverlay]),
-    );
+    const zone = createOverlayInteractionZone(createArgs([interactiveOverlay]));
     expect(zone).toBeDefined();
     expect(zone?.id).toBe('overlay-interaction');
     expect(zone?.area).toBe(timelineRect);
@@ -120,7 +118,10 @@ describe('overlay_interactions', () => {
       buttons: 1,
     };
 
-    zone?.drag?.onDragStart?.(syntheticDragStart, document.createElement('div'));
+    zone?.drag?.onDragStart?.(
+      syntheticDragStart,
+      document.createElement('div'),
+    );
 
     expect(onPointerDown).toHaveBeenCalledTimes(1);
     const downEv: OverlayPointerEvent = onPointerDown.mock.calls[0][0];
@@ -288,9 +289,7 @@ describe('overlay_interactions', () => {
       isInteractive: () => true,
       onPointerMove: vi.fn(),
     };
-    const zone = createOverlayInteractionZone(
-      createArgs([interactiveOverlay]),
-    );
+    const zone = createOverlayInteractionZone(createArgs([interactiveOverlay]));
     expect(zone).toBeDefined();
     // Verify zone has no hover callback
     expect('onMouseMove' in (zone ?? {})).toBe(false);
@@ -305,9 +304,7 @@ describe('overlay_interactions', () => {
       onPointerUp: () => events.push('up'),
     };
 
-    const zone = createOverlayInteractionZone(
-      createArgs([interactiveOverlay]),
-    );
+    const zone = createOverlayInteractionZone(createArgs([interactiveOverlay]));
 
     // Click via onClick handler
     zone?.onClick?.({position: new Vector2D({x: 250, y: 20})});
@@ -348,7 +345,11 @@ describe('overlay_interactions', () => {
       div.remove();
     });
 
-    function dispatchMouseEvent(type: string, clientX: number, clientY: number) {
+    function dispatchMouseEvent(
+      type: string,
+      clientX: number,
+      clientY: number,
+    ) {
       div.dispatchEvent(
         new MouseEvent(type, {
           bubbles: true,

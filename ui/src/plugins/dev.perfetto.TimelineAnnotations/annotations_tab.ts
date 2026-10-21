@@ -423,7 +423,6 @@ export class AnnotationsTab implements Tab {
     return m(
       Select,
       {
-        key: `color-select-${annotation.id}`,
         className: 'pf-timeline-annotations-color-select',
         value: matchesPalette ? normalized : annotation.color,
         onchange: (event: Event) => {

@@ -12,6 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+:root,
+.pf-timeline-annotations-tab {
+  --pf-anim-enter: cubic-bezier(0.2, 0, 0, 1);
+  --pf-anim-exit: cubic-bezier(0.4, 0, 1, 1);
+}
+
 @keyframes pf-annotations-item-enter {
   from {
     opacity: 0;
@@ -27,7 +33,7 @@
   from {
     opacity: 1;
     transform: translateX(0) scale(1);
-    max-height: 48px;
+    max-height: 80px;
   }
   to {
     opacity: 0;
@@ -48,6 +54,15 @@
   }
 }
 
+@keyframes pf-annotations-backdrop-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 @keyframes pf-annotations-dialog-enter {
   from {
     opacity: 0;
@@ -59,34 +74,57 @@
   }
 }
 
-@keyframes pf-annotations-popup-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
-@keyframes pf-annotations-popup-out {
+@keyframes pf-annotations-modal-scale-out {
   from {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
   to {
     opacity: 0;
-    transform: translateY(-4px) scale(0.96);
+    transform: translateY(8px) scale(0.95);
   }
 }
 
-@keyframes pf-annotations-selector-pop {
+@keyframes pf-annotations-popup-enter {
+  0% {
+    opacity: 0;
+    scale: 0.94;
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes pf-annotations-popup-exit {
+  0% {
+    opacity: 1;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 0.95;
+  }
+}
+
+@keyframes pf-annotations-swatch-select {
+  0% {
+    transform: scale(0.85);
+  }
+  60% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes pf-annotations-icon-pop {
   0% {
     transform: scale(0.92);
   }
-  60% {
-    transform: scale(1.06);
+  65% {
+    transform: scale(1.08);
   }
   100% {
     transform: scale(1);
@@ -129,14 +167,16 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px;
+  height: 28px;
+  padding: 0 10px;
+  box-sizing: border-box;
   border-radius: 16px;
   background: var(--pf-color-background, #ffffff);
   border: 1px solid var(--pf-color-border);
   transition:
-    background 140ms ease,
-    border-color 140ms ease,
-    box-shadow 140ms ease;
+    background 140ms var(--pf-anim-enter),
+    border-color 140ms var(--pf-anim-enter),
+    box-shadow 140ms var(--pf-anim-enter);
 
   &--active {
     border-color: var(--pf-color-primary, #1e88e5);
@@ -151,8 +191,8 @@
     font-size: 16px;
     color: var(--pf-color-text-muted);
     transition:
-      color 140ms ease,
-      transform 140ms ease;
+      color 140ms var(--pf-anim-enter),
+      transform 140ms var(--pf-anim-enter);
   }
 }
 
@@ -172,7 +212,9 @@
 }
 
 .pf-timeline-annotations__tools {
-  .pf-button {
+  .pf-button,
+  .pf-timeline-annotations__tool-btn,
+  .pf-timeline-annotations__tool-button {
     min-width: 28px;
     height: 28px;
     padding: 2px;
@@ -180,17 +222,43 @@
     align-items: center;
     justify-content: center;
     transition:
-      background 140ms cubic-bezier(0.22, 1, 0.36, 1),
-      color 140ms cubic-bezier(0.22, 1, 0.36, 1),
-      border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
-      transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+      background-color 140ms var(--pf-anim-enter),
+      color 140ms var(--pf-anim-enter),
+      border-color 140ms var(--pf-anim-enter),
+      box-shadow 140ms var(--pf-anim-enter),
+      transform 140ms var(--pf-anim-enter);
 
     &.pf-active {
       background-color: var(--pf-color-primary);
       color: var(--pf-color-text-on-primary, #ffffff);
-      animation: pf-annotations-selector-pop 160ms
-        cubic-bezier(0.22, 1, 0.36, 1);
+
+      i.pf-icon {
+        animation: pf-annotations-icon-pop 180ms var(--pf-anim-enter);
+      }
     }
+  }
+}
+
+.pf-timeline-annotations__color-trigger {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 5px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  vertical-align: middle;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+
+  .pf-button__label {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
   }
 }
 
@@ -198,7 +266,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 6px;
+  padding: 0 6px;
   border: 1px solid var(--pf-color-border);
   border-radius: 4px;
   background: var(--pf-color-background, #ffffff);
@@ -206,10 +274,10 @@
   height: 28px;
   box-sizing: border-box;
   transition:
-    background 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    background 140ms var(--pf-anim-enter),
+    border-color 140ms var(--pf-anim-enter),
+    transform 140ms var(--pf-anim-enter),
+    box-shadow 140ms var(--pf-anim-enter);
 
   &:hover {
     border-color: var(--pf-color-accent, #1e88e5);
@@ -228,6 +296,11 @@
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.28),
     inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  transition:
+    transform 160ms var(--pf-anim-enter),
+    box-shadow 160ms var(--pf-anim-enter),
+    background-color 160ms var(--pf-anim-enter),
+    border-color 160ms var(--pf-anim-enter);
 }
 
 .pf-timeline-annotations__swatches {
@@ -257,8 +330,10 @@
   align-items: center;
   justify-content: center;
   transition:
-    transform 120ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 120ms ease;
+    transform 160ms var(--pf-anim-enter),
+    box-shadow 160ms var(--pf-anim-enter),
+    background-color 160ms var(--pf-anim-enter),
+    border-color 160ms var(--pf-anim-enter);
 
   &:hover {
     transform: scale(1.18);
@@ -270,7 +345,8 @@
     box-shadow:
       0 0 0 1px var(--pf-color-background, #ffffff),
       inset 0 0 0 1px rgba(255, 255, 255, 0.4);
-    transform: scale(1.08);
+    transform: scale(1.06);
+    animation: pf-annotations-swatch-select 180ms var(--pf-anim-enter);
   }
 
   &--auto {
@@ -282,22 +358,22 @@
 
     i.pf-icon {
       font-size: 13px;
-      color: var(--pf-color-text, #333333);
+      color: inherit;
     }
   }
 
   &--none {
     background:
       linear-gradient(
-        to top right,
-        transparent calc(50% - 1.5px),
-        #e53935 calc(50% - 1.5px),
-        #e53935 calc(50% + 1.5px),
-        transparent calc(50% + 1.5px)
+        135deg,
+        transparent calc(50% - 0.75px),
+        var(--pf-color-text-muted, #757575) calc(50% - 0.75px),
+        var(--pf-color-text-muted, #757575) calc(50% + 0.75px),
+        transparent calc(50% + 0.75px)
       ),
-      repeating-conic-gradient(rgba(0, 0, 0, 0.12) 0% 25%, transparent 0% 50%)
-        50% / 6px 6px;
-    background-color: var(--pf-color-background, #ffffff);
+      var(--pf-color-background, #ffffff);
+    border: 1.5px dashed var(--pf-color-text-muted, #757575);
+    color: var(--pf-color-text-muted, #757575);
   }
 
   &--custom {
@@ -340,20 +416,23 @@
 
 .pf-timeline-annotations-item {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 10px;
   border-radius: 4px;
   background-color: var(--pf-color-background-secondary);
   border: 1px solid var(--pf-color-border);
   box-sizing: border-box;
-  animation: pf-annotations-item-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
   transition:
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 200ms var(--pf-anim-enter),
+    transform 200ms var(--pf-anim-enter),
+    border-color 140ms var(--pf-anim-enter),
+    background-color 140ms var(--pf-anim-enter),
+    box-shadow 140ms var(--pf-anim-enter);
+
+  &--entering {
+    animation: pf-annotations-item-enter 160ms var(--pf-anim-enter);
+  }
 
   &.pf-timeline-annotations-item--selected {
     outline: 2px solid var(--pf-color-accent);
@@ -372,9 +451,26 @@
   }
 
   &.pf-timeline-annotations-item--deleting {
-    animation: pf-annotations-item-exit 150ms cubic-bezier(0.22, 1, 0.36, 1)
-      forwards;
+    animation: pf-annotations-item-exit 150ms var(--pf-anim-exit) forwards;
     pointer-events: none;
+  }
+
+  &__header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    min-height: 26px;
+    width: 100%;
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    padding-left: 2px;
+    box-sizing: border-box;
   }
 
   .pf-timeline-annotations-kind-trigger,
@@ -406,8 +502,8 @@
   padding: 0 2px;
   cursor: pointer;
   transition:
-    background 140ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    background 140ms var(--pf-anim-enter),
+    transform 140ms var(--pf-anim-enter);
 
   &:hover {
     background: var(--pf-color-background-hover, rgba(0, 0, 0, 0.05));
@@ -428,26 +524,82 @@
   }
 }
 
+.pf-timeline-annotations-input {
+  font-family: inherit;
+  font-size: var(--pf-font-size-s, 12px);
+  color: var(--pf-color-text, inherit);
+  background: var(--pf-color-background, #ffffff);
+  border: 1px solid var(--pf-color-border, #cccccc);
+  border-radius: 4px;
+  padding: 0 8px;
+  box-sizing: border-box;
+  transition:
+    border-color 140ms var(--pf-anim-enter),
+    box-shadow 140ms var(--pf-anim-enter);
+
+  &:focus {
+    outline: none;
+    border-color: var(--pf-color-primary, #1e88e5);
+    box-shadow: 0 0 0 2px
+      var(--pf-color-primary-subtle, rgba(30, 136, 229, 0.2));
+  }
+
+  &.pf-timeline-annotations-title,
+  &.pf-timeline-annotations-title-input {
+    flex: 1;
+    min-width: 100px;
+    height: 26px;
+  }
+
+  &.pf-timeline-annotations-description,
+  &.pf-timeline-annotations-desc-input {
+    width: 100%;
+    height: 24px;
+  }
+}
+
 .pf-timeline-annotations-title-input {
   flex: 1;
-  min-width: 120px;
+  min-width: 100px;
+  height: 26px;
 }
 
 .pf-timeline-annotations-desc-input {
-  flex: 2;
-  min-width: 160px;
+  width: 100%;
+  height: 24px;
 }
 
 .pf-timeline-annotations-badge {
-  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.2;
+  user-select: none;
   flex-shrink: 0;
+
+  &--degraded {
+    background-color: var(--pf-color-warning-subtle, rgba(255, 160, 0, 0.15));
+    color: var(--pf-color-warning, #f57c00);
+    border: 1px solid var(--pf-color-warning, #f57c00);
+  }
+
+  &--unanchored {
+    background-color: var(--pf-color-danger-subtle, rgba(229, 57, 53, 0.15));
+    color: var(--pf-color-danger, #e53935);
+    border: 1px solid var(--pf-color-danger, #e53935);
+  }
 }
 
 .pf-timeline-annotations-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  margin-left: 6px;
+  gap: 4px;
+  height: 26px;
+  margin-left: auto;
   flex-shrink: 0;
 
   .pf-button {
@@ -457,14 +609,76 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    line-height: 1;
+    box-sizing: border-box;
     border-radius: 4px;
     transition:
-      background-color 140ms ease,
-      color 140ms ease,
-      transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+      background-color 140ms var(--pf-anim-enter),
+      color 140ms var(--pf-anim-enter),
+      transform 140ms var(--pf-anim-enter);
 
     &:hover {
       transform: scale(1.08);
+    }
+
+    i.pf-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+      line-height: 1;
+      width: 16px;
+      height: 16px;
+      margin: 0;
+    }
+  }
+}
+
+.pf-timeline-annotations-label-toolbar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  box-sizing: border-box;
+
+  .pf-timeline-annotations-select {
+    height: 24px;
+    font-size: 11px;
+    padding: 0 4px;
+    border-radius: 4px;
+    border: 1px solid var(--pf-color-border, #cccccc);
+    background: var(--pf-color-background, #ffffff);
+    color: var(--pf-color-text, inherit);
+    cursor: pointer;
+    box-sizing: border-box;
+    outline: none;
+
+    &:focus {
+      border-color: var(--pf-color-primary, #1e88e5);
+    }
+  }
+
+  .pf-timeline-annotations-font-select {
+    min-width: 110px;
+    flex: 0 1 auto;
+  }
+
+  .pf-timeline-annotations-size-select {
+    min-width: 55px;
+    flex: 0 0 auto;
+  }
+
+  .pf-timeline-annotations__color-trigger {
+    height: 24px;
+    padding: 0 4px;
+    border: 1px solid var(--pf-color-border);
+    border-radius: 4px;
+    background: var(--pf-color-background);
+
+    &:hover {
+      background: var(--pf-color-background-hover);
     }
   }
 }
@@ -478,7 +692,14 @@
   align-items: center;
   justify-content: center;
   backdrop-filter: blur(2px);
-  animation: pf-annotations-backdrop-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: pf-annotations-backdrop-enter 160ms var(--pf-anim-enter);
+
+  &--closing,
+  &.pf-timeline-annotations-modal-backdrop--closing {
+    animation: pf-annotations-backdrop-fade-out 130ms var(--pf-anim-exit)
+      forwards;
+    pointer-events: none;
+  }
 }
 
 .pf-timeline-annotations-clear-dialog {
@@ -495,7 +716,13 @@
   text-align: center;
   gap: 12px;
   box-sizing: border-box;
-  animation: pf-annotations-dialog-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: pf-annotations-dialog-enter 200ms var(--pf-anim-enter);
+
+  &--closing,
+  &.pf-timeline-annotations-modal--closing {
+    animation: pf-annotations-modal-scale-out 130ms var(--pf-anim-exit) forwards;
+    pointer-events: none;
+  }
 
   &__badge {
     width: 44px;
@@ -539,13 +766,15 @@
   pointer-events: none !important;
 }
 
-.pf-timeline-annotations-popup-anim {
-  animation: pf-annotations-popup-in 150ms cubic-bezier(0.22, 1, 0.36, 1)
-    forwards;
+.pf-popup.pf-timeline-annotations__style-popup[data-popper-placement],
+.pf-popup.pf-timeline-annotations__kind-popup[data-popper-placement] {
+  animation: pf-annotations-popup-enter 120ms var(--pf-anim-enter) both;
+  transform-origin: top center;
 
-  &--closing {
-    animation: pf-annotations-popup-out 130ms cubic-bezier(0.22, 1, 0.36, 1)
-      forwards;
+  &.pf-timeline-annotations-popup--closing,
+  &.pf-timeline-annotations__style-popup--closing,
+  &.pf-timeline-annotations__kind-popup--closing {
+    animation: pf-annotations-popup-exit 85ms var(--pf-anim-exit) forwards;
     pointer-events: none;
   }
 }
@@ -554,7 +783,7 @@
   padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   max-width: 290px;
   font-size: var(--pf-font-size-s, 12px);
 }
@@ -564,25 +793,50 @@
   flex-direction: column;
   gap: 6px;
 
+  & + .pf-timeline-annotations-style-section {
+    border-top: 1px solid var(--pf-color-border);
+    padding-top: 10px;
+    margin-top: 2px;
+  }
+
+  .pf-timeline-annotations-popup-section__title,
+  .pf-timeline-annotations__label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--pf-color-text-muted);
+    margin-bottom: 2px;
+  }
+
   .pf-button-group .pf-button {
     transition:
-      background 140ms ease,
-      color 140ms ease,
-      transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+      background 140ms var(--pf-anim-enter),
+      color 140ms var(--pf-anim-enter),
+      transform 140ms var(--pf-anim-enter);
 
     &.pf-active {
-      animation: pf-annotations-selector-pop 160ms
-        cubic-bezier(0.22, 1, 0.36, 1);
+      animation: pf-annotations-icon-pop 160ms var(--pf-anim-enter);
     }
   }
 }
 
 .pf-timeline-annotations-slider-row {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed
+    color-mix(in srgb, var(--pf-color-border) 60%, transparent);
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: var(--pf-font-size-s, 12px);
+  font-size: 11px;
   color: var(--pf-color-text-muted);
+
+  span:first-child {
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
 
   input[type="range"] {
     flex: 1;
@@ -591,7 +845,7 @@
     background: var(--pf-color-border, #e0e0e0);
     outline: none;
     cursor: pointer;
-    transition: background 140ms ease;
+    transition: background 140ms var(--pf-anim-enter);
 
     &::-webkit-slider-thumb {
       -webkit-appearance: none;
@@ -604,9 +858,9 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
       cursor: pointer;
       transition:
-        transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
-        box-shadow 140ms ease,
-        filter 140ms ease;
+        transform 140ms var(--pf-anim-enter),
+        box-shadow 140ms var(--pf-anim-enter),
+        filter 140ms var(--pf-anim-enter);
 
       &:hover {
         transform: scale(1.18);
@@ -632,9 +886,9 @@
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
       cursor: pointer;
       transition:
-        transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
-        box-shadow 140ms ease,
-        filter 140ms ease;
+        transform 140ms var(--pf-anim-enter),
+        box-shadow 140ms var(--pf-anim-enter),
+        filter 140ms var(--pf-anim-enter);
 
       &:hover {
         transform: scale(1.18);
@@ -654,17 +908,18 @@
 }
 
 .pf-timeline-annotations-slider-val {
-  min-width: 44px;
+  min-width: 34px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-size: 11px;
   font-weight: 500;
   padding: 2px 6px;
   border-radius: 10px;
   background: var(--pf-color-background-hover, rgba(128, 128, 128, 0.12));
   color: var(--pf-color-text, #333333);
   transition:
-    background-color 140ms ease,
-    transform 140ms ease;
+    background-color 140ms var(--pf-anim-enter),
+    transform 140ms var(--pf-anim-enter);
 }
 
 .pf-timeline-annotations-kind-menu {
@@ -686,8 +941,8 @@
     font-size: var(--pf-font-size-m, 13px);
     color: var(--pf-color-text);
     transition:
-      background 140ms cubic-bezier(0.22, 1, 0.36, 1),
-      transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+      background 140ms var(--pf-anim-enter),
+      transform 140ms var(--pf-anim-enter);
 
     &:hover {
       background: var(--pf-color-background-hover, rgba(0, 0, 0, 0.05));
@@ -696,8 +951,7 @@
     &.pf-active {
       background: var(--pf-color-primary);
       color: var(--pf-color-text-on-primary, #ffffff);
-      animation: pf-annotations-selector-pop 160ms
-        cubic-bezier(0.22, 1, 0.36, 1);
+      animation: pf-annotations-icon-pop 160ms var(--pf-anim-enter);
     }
   }
 }

@@ -18,9 +18,12 @@ import {
   type Annotation,
   type RectAnnotation,
   AnnotationStore,
+  clampArrowControlOffset,
+  createAnnotation,
   fromSerialized,
   normalizeColor,
   toSerialized,
+  updateAnnotation,
 } from './model';
 
 describe('model.ts', () => {
@@ -133,7 +136,7 @@ describe('model.ts', () => {
         from: {kind: 'annotation', id: 'rect_other'},
         to: {
           kind: 'point',
-          point: {ts: Time.fromRaw(500n), trackUri: 'track_2', yFrac: 0.5},
+          point: {ts: Time.fromRaw(50n), trackUri: 'track_2', yFrac: 0.5},
         },
       });
 
@@ -441,16 +444,134 @@ describe('model.ts', () => {
         position: {ts: Time.fromRaw(0n), trackUri: 't', yFrac: 0.5},
       });
       expect(added.fillColor).toBe('transparent');
-      const labelAdded = store.get(added.id) as any;
-      expect(labelAdded.textColor).toBe('#e53935');
-      expect(labelAdded.backgroundColor).toBe('#fdd835');
+      const labelAdded = store.get(added.id);
+      if (labelAdded?.kind === 'label') {
+        expect(labelAdded.textColor).toBe('#e53935');
+        expect(labelAdded.backgroundColor).toBe('#fdd835');
+      }
 
       const updated = store.update(added.id, {
         fillColor: undefined,
         textColor: '#00ff00',
       });
       expect(updated?.fillColor).toBeUndefined();
-      expect((updated as any)?.textColor).toBe('#00ff00');
+      if (updated?.kind === 'label') {
+        expect(updated.textColor).toBe('#00ff00');
+      }
+    });
+  });
+
+  describe('Cubic Bézier arrow controlOffsets and clampArrowControlOffset', () => {
+    test('clampArrowControlOffset bounds alongFrac and normalPx', () => {
+      const clampedLow = clampArrowControlOffset({
+        alongFrac: -0.5,
+        normalPx: -1500,
+      });
+      expect(clampedLow).toEqual({alongFrac: 0, normalPx: -1000});
+
+      const clampedHigh = clampArrowControlOffset({
+        alongFrac: 1.5,
+        normalPx: 2000,
+      });
+      expect(clampedHigh).toEqual({alongFrac: 1, normalPx: 1000});
+
+      const clampedLegacy = clampArrowControlOffset({
+        dxFrac: 0.7,
+        dyPx: 50,
+      });
+      expect(clampedLegacy).toEqual({alongFrac: 0.7, normalPx: 50});
+    });
+
+    test('createAnnotation clamps controlOffsets on arrow', () => {
+      const arrow = createAnnotation({
+        kind: 'arrow',
+        color: 'blue',
+        from: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(0n), trackUri: 't', yFrac: 0.5},
+        },
+        to: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(100n), trackUri: 't', yFrac: 0.5},
+        },
+        controlOffsets: [
+          {alongFrac: -0.2, normalPx: 200},
+          {alongFrac: 1.8, normalPx: -2000},
+        ],
+      });
+      if (arrow.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(arrow.controlOffsets).toEqual([
+        {alongFrac: 0, normalPx: 200},
+        {alongFrac: 1, normalPx: -1000},
+      ]);
+    });
+
+    test('updateAnnotation updates, clamps, and deletes controlOffsets when null', () => {
+      const existing = createAnnotation({
+        kind: 'arrow',
+        color: 'blue',
+        from: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(0n), trackUri: 't', yFrac: 0.5},
+        },
+        to: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(100n), trackUri: 't', yFrac: 0.5},
+        },
+        controlOffsets: [
+          {alongFrac: 0.3, normalPx: 40},
+          {alongFrac: 0.7, normalPx: -40},
+        ],
+      });
+      expect(existing.kind).toBe('arrow');
+      if (existing.kind !== 'arrow') return;
+
+      const updated = updateAnnotation(existing, {
+        controlOffsets: [
+          {alongFrac: 0.2, normalPx: 80},
+          {alongFrac: 0.8, normalPx: -80},
+        ],
+      });
+      if (updated.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(updated.controlOffsets).toEqual([
+        {alongFrac: 0.2, normalPx: 80},
+        {alongFrac: 0.8, normalPx: -80},
+      ]);
+
+      const cleared = updateAnnotation(updated, {controlOffsets: null});
+      if (cleared.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(cleared.controlOffsets).toBeUndefined();
+    });
+
+    test('AnnotationStore add and update clamp and clear controlOffsets', () => {
+      const store = new AnnotationStore();
+      const added = store.add({
+        kind: 'arrow',
+        color: 'red',
+        from: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(0n), trackUri: 't', yFrac: 0.5},
+        },
+        to: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(100n), trackUri: 't', yFrac: 0.5},
+        },
+        controlOffsets: [
+          {alongFrac: -0.1, normalPx: 50},
+          {alongFrac: 1.1, normalPx: -50},
+        ],
+      });
+      if (added.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(added.controlOffsets).toEqual([
+        {alongFrac: 0, normalPx: 50},
+        {alongFrac: 1, normalPx: -50},
+      ]);
+
+      const updated = store.update(added.id, {
+        controlOffsets: null,
+      });
+      if (updated?.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(updated.controlOffsets).toBeUndefined();
     });
   });
 
@@ -616,7 +737,7 @@ describe('model.ts', () => {
   });
 
   describe('toSerialized and fromSerialized round-trip', () => {
-    test('round-trips all annotation kinds and extreme int64 timestamps', () => {
+    test('round-trips all annotation kinds, topYFrac/bottomYFrac, and controlOffsets', () => {
       const annotations: Annotation[] = [
         {
           id: 'rect-roundtrip',
@@ -632,13 +753,15 @@ describe('model.ts', () => {
             end: Time.fromRaw(9223372036854775807n),
             trackUris: ['track_extreme'],
             trackNames: ['Extreme Track'],
+            topYFrac: 0.15,
+            bottomYFrac: 0.85,
           },
         },
         {
           id: 'label-roundtrip',
           kind: 'label',
           color: '#abcdef',
-          fontFamily: 'monospace',
+          fontFamily: 'Inter',
           fontSize: 20,
           textColor: '#111111',
           backgroundColor: '#eeeeee',
@@ -658,6 +781,10 @@ describe('model.ts', () => {
           color: '#654321',
           curvature: 250,
           controlOffset: {alongFrac: 0.6, normalPx: -50},
+          controlOffsets: [
+            {alongFrac: 0.35, normalPx: -45},
+            {alongFrac: 0.65, normalPx: 55},
+          ],
           createdAt: 5000,
           updatedAt: 6000,
           from: {kind: 'annotation', id: 'rect-roundtrip'},
@@ -675,6 +802,21 @@ describe('model.ts', () => {
       const serialized = toSerialized(annotations);
       expect(serialized.version).toBe(1);
       expect(serialized.annotations[0].kind).toBe('rect');
+      const serRect = serialized.annotations[0] as {
+        kind: 'rect';
+        anchor: {topYFrac?: number; bottomYFrac?: number};
+      };
+      expect(serRect.anchor.topYFrac).toBe(0.15);
+      expect(serRect.anchor.bottomYFrac).toBe(0.85);
+
+      const serArrow = serialized.annotations[2] as {
+        kind: 'arrow';
+        controlOffsets?: unknown;
+      };
+      expect(serArrow.controlOffsets).toEqual([
+        {alongFrac: 0.35, normalPx: -45},
+        {alongFrac: 0.65, normalPx: 55},
+      ]);
 
       const restored = fromSerialized(serialized);
       expect(restored).toEqual(annotations);

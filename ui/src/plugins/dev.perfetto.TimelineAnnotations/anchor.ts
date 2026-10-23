@@ -154,6 +154,11 @@ export function resolveArea(
   const resolved: string[] = [];
   const missing: string[] = [];
 
+  let firstBounds: {top: number; bottom: number; height: number} | undefined;
+  let firstStatus: ResolutionStatus | undefined;
+  let lastBounds: {top: number; bottom: number; height: number} | undefined;
+  let lastStatus: ResolutionStatus | undefined;
+
   for (let index = 0; index < anchor.trackUris.length; index += 1) {
     const uri = anchor.trackUris[index];
     const name = anchor.trackNames?.[index];
@@ -162,6 +167,18 @@ export function resolveArea(
       : resolveTrackY(uri, name, tracks, rootNode);
     if (resolution !== undefined) {
       resolved.push(uri);
+      const bounds = {
+        top: resolution.top,
+        bottom: resolution.bottom,
+        height: resolution.bottom - resolution.top,
+      };
+      if (firstBounds === undefined) {
+        firstBounds = bounds;
+        firstStatus = resolution.status;
+      }
+      lastBounds = bounds;
+      lastStatus = resolution.status;
+
       if (resolution.top < minTop) {
         minTop = resolution.top;
       }
@@ -175,6 +192,28 @@ export function resolveArea(
 
   if (resolved.length === 0) {
     return undefined;
+  }
+
+  if (
+    anchor.topYFrac !== undefined &&
+    firstBounds !== undefined &&
+    firstStatus === 'exact'
+  ) {
+    minTop =
+      firstBounds.top +
+      firstBounds.height * Math.max(0, Math.min(1, anchor.topYFrac));
+  }
+  if (
+    anchor.bottomYFrac !== undefined &&
+    lastBounds !== undefined &&
+    lastStatus === 'exact'
+  ) {
+    maxBottom =
+      lastBounds.top +
+      lastBounds.height * Math.max(0, Math.min(1, anchor.bottomYFrac));
+  }
+  if (maxBottom <= minTop) {
+    maxBottom = minTop + 2;
   }
 
   return {

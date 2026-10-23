@@ -16,10 +16,18 @@ import {describe, expect, test} from 'vitest';
 import type {Point2D} from '../../base/geom';
 import {
   bboxOf,
+  computeBezierBoundingBox,
+  computeBezierControlPoint,
+  computeCubicBaseControlPoints,
+  computeCubicBezierBoundingBox,
+  computeCubicControlPoints,
   computeQuadraticControlPoint,
   curvatureFromMidpoint,
   distancePointToSegment,
+  evaluateCubicBezier,
+  evaluateCubicBezierTangent,
   evaluateQuadraticBezier,
+  hitTestCubicBezier,
   hitTestEllipse,
   hitTestPolyline,
   hitTestQuadraticBezier,
@@ -287,7 +295,7 @@ describe('geometry.ts', () => {
     });
   });
 
-  describe('Quadratic Bezier geometry', () => {
+  describe('Quadratic Bezier geometry and legacy helpers', () => {
     const start: Point2D = {x: 0, y: 0};
     const end: Point2D = {x: 100, y: 0};
 
@@ -304,6 +312,31 @@ describe('geometry.ts', () => {
       const apex = evaluateQuadraticBezier(start, control, end, 0.5);
       expect(apex.x).toBeCloseTo(50);
       expect(apex.y).toBeCloseTo(25);
+    });
+
+    test('computeBezierControlPoint wraps computeQuadraticControlPoint', () => {
+      const control = computeBezierControlPoint(start, end, {
+        alongFrac: 0.5,
+        normalPx: 25,
+      });
+      expect(control.x).toBeCloseTo(50);
+      expect(control.y).toBeCloseTo(50);
+
+      const controlLegacy = computeBezierControlPoint(start, end, {
+        dxFrac: 0.5,
+        dyPx: 25,
+      });
+      expect(controlLegacy.x).toBeCloseTo(50);
+      expect(controlLegacy.y).toBeCloseTo(50);
+    });
+
+    test('computeBezierBoundingBox returns padded box for quadratic curve', () => {
+      const control: Point2D = {x: 50, y: 50};
+      const bbox = computeBezierBoundingBox(start, control, end, 10);
+      expect(bbox.left).toBeCloseTo(-10);
+      expect(bbox.top).toBeCloseTo(-10);
+      expect(bbox.right).toBeCloseTo(110);
+      expect(bbox.bottom).toBeCloseTo(35); // apex y=25 + 10 padding
     });
 
     test('computeQuadraticControlPoint handles degenerate chord length', () => {
@@ -403,6 +436,120 @@ describe('geometry.ts', () => {
       expect(
         hitTestQuadraticBezier({x: 50, y: 100}, start, control, end, 5),
       ).toBe(false);
+    });
+  });
+
+  describe('Cubic Bezier geometry helpers', () => {
+    const start: Point2D = {x: 10, y: 20};
+    const end: Point2D = {x: 110, y: 120}; // dx = 100, dy = 100
+
+    test('computeCubicBaseControlPoints gives natural Perfetto flow S-curve', () => {
+      // Horizontal span dx = 100 >= 24
+      const [base1, base2] = computeCubicBaseControlPoints(start, end);
+      expect(base1.x).toBeCloseTo(10 + 100 * 0.38);
+      expect(base1.y).toBeCloseTo(20 + 100 * 0.08);
+      expect(base2.x).toBeCloseTo(110 - 100 * 0.38);
+      expect(base2.y).toBeCloseTo(120 - 100 * 0.08);
+
+      // Nearly vertical arrow (|dx| < 24)
+      const vertStart = {x: 50, y: 0};
+      const vertEnd = {x: 60, y: 200}; // dx = 10 < 24
+      const [vBase1, vBase2] = computeCubicBaseControlPoints(
+        vertStart,
+        vertEnd,
+      );
+      expect(vBase1.x).toBeCloseTo(50 + 10 * 0.33);
+      expect(vBase1.y).toBeCloseTo(0 + 200 * 0.33);
+      expect(vBase2.x).toBeCloseTo(50 + 10 * 0.67);
+      expect(vBase2.y).toBeCloseTo(0 + 200 * 0.67);
+    });
+
+    test('computeCubicControlPoints with controlOffsets offsets handles', () => {
+      const span = Math.hypot(100, 100);
+      const [base1, base2] = computeCubicBaseControlPoints(start, end);
+      const [cp1, cp2] = computeCubicControlPoints(start, end, [
+        {dxFrac: 0.1, dyPx: 15},
+        {dxFrac: -0.1, dyPx: -20},
+      ]);
+      expect(cp1.x).toBeCloseTo(base1.x + 0.1 * span);
+      expect(cp1.y).toBeCloseTo(base1.y + 15);
+      expect(cp2.x).toBeCloseTo(base2.x - 0.1 * span);
+      expect(cp2.y).toBeCloseTo(base2.y - 20);
+    });
+
+    test('computeCubicControlPoints elevates legacy quadratic control offset', () => {
+      const qCp = computeBezierControlPoint(start, end, {
+        dxFrac: 0.5,
+        dyPx: 40,
+      });
+      const [cp1, cp2] = computeCubicControlPoints(start, end, undefined, {
+        dxFrac: 0.5,
+        dyPx: 40,
+      });
+      expect(cp1.x).toBeCloseTo(start.x + (2 / 3) * (qCp.x - start.x));
+      expect(cp1.y).toBeCloseTo(start.y + (2 / 3) * (qCp.y - start.y));
+      expect(cp2.x).toBeCloseTo(end.x + (2 / 3) * (qCp.x - end.x));
+      expect(cp2.y).toBeCloseTo(end.y + (2 / 3) * (qCp.y - end.y));
+    });
+
+    test('evaluateCubicBezier evaluates endpoints and curve', () => {
+      const p0 = {x: 0, y: 0};
+      const p1 = {x: 30, y: 50};
+      const p2 = {x: 70, y: 50};
+      const p3 = {x: 100, y: 0};
+
+      expect(evaluateCubicBezier(p0, p1, p2, p3, 0)).toEqual(p0);
+      expect(evaluateCubicBezier(p0, p1, p2, p3, 1)).toEqual(p3);
+
+      const mid = evaluateCubicBezier(p0, p1, p2, p3, 0.5);
+      expect(mid.x).toBeCloseTo(50);
+      expect(mid.y).toBeCloseTo(37.5);
+    });
+
+    test('evaluateCubicBezierTangent evaluates velocity and fallback', () => {
+      const p0 = {x: 0, y: 0};
+      const p1 = {x: 50, y: 50};
+      const p2 = {x: 50, y: 50};
+      const p3 = {x: 100, y: 0};
+
+      const tangentStart = evaluateCubicBezierTangent(p0, p1, p2, p3, 0);
+      expect(tangentStart.x).toBeCloseTo(3 * (p1.x - p0.x));
+      expect(tangentStart.y).toBeCloseTo(3 * (p1.y - p0.y));
+
+      // Degenerate curve fallback
+      const degen = {x: 5, y: 5};
+      const tangentDegen = evaluateCubicBezierTangent(
+        degen,
+        degen,
+        degen,
+        degen,
+        0.5,
+      );
+      expect(tangentDegen).toEqual({x: 0, y: 0});
+    });
+
+    test('hitTestCubicBezier detects near and far points', () => {
+      const p0 = {x: 0, y: 0};
+      const p1 = {x: 0, y: 100};
+      const p2 = {x: 100, y: 100};
+      const p3 = {x: 100, y: 0};
+
+      const mid = evaluateCubicBezier(p0, p1, p2, p3, 0.5);
+      expect(hitTestCubicBezier(mid, p0, p1, p2, p3, 5)).toBe(true);
+      expect(hitTestCubicBezier({x: 50, y: 0}, p0, p1, p2, p3, 5)).toBe(false);
+    });
+
+    test('computeCubicBezierBoundingBox pads tightly around curve', () => {
+      const p0 = {x: 0, y: 0};
+      const p1 = {x: 0, y: 100};
+      const p2 = {x: 100, y: 100};
+      const p3 = {x: 100, y: 0};
+
+      const bbox = computeCubicBezierBoundingBox(p0, p1, p2, p3, 10);
+      expect(bbox.left).toBeCloseTo(-10);
+      expect(bbox.right).toBeCloseTo(110);
+      expect(bbox.top).toBeCloseTo(-10);
+      expect(bbox.bottom).toBeCloseTo(110);
     });
   });
 

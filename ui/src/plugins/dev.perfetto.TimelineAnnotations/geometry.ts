@@ -23,6 +23,8 @@ export interface RectBounds {
   readonly height: number;
 }
 
+export type BoundingBox = RectBounds;
+
 export type ShapeKind = 'rect' | 'ellipse' | 'line' | 'none';
 
 export interface RecognizedShape {
@@ -55,6 +57,8 @@ export function distancePointToSegment(
   const closestY = segmentStart.y + clampedT * deltaY;
   return Math.hypot(point.x - closestX, point.y - closestY);
 }
+
+export const pointToSegmentDistance = distancePointToSegment;
 
 export function bboxOf(points: ReadonlyArray<Point2D>): RectBounds {
   if (points.length === 0) {
@@ -452,6 +456,21 @@ export function computeQuadraticControlPoint(
   };
 }
 
+export function computeBezierControlPoint(
+  start: Point2D,
+  end: Point2D,
+  offset: {
+    readonly dxFrac?: number;
+    readonly dyPx?: number;
+    readonly alongFrac?: number;
+    readonly normalPx?: number;
+  },
+): Point2D {
+  const alongFrac = offset.dxFrac ?? offset.alongFrac ?? 0.5;
+  const normalPx = offset.dyPx ?? offset.normalPx ?? 0;
+  return computeQuadraticControlPoint(start, end, normalPx, alongFrac);
+}
+
 export function evaluateQuadraticBezier(
   start: Point2D,
   control: Point2D,
@@ -497,6 +516,24 @@ export function sampleQuadraticBezier(
   return points;
 }
 
+export function computeBezierBoundingBox(
+  start: Point2D,
+  control: Point2D,
+  end: Point2D,
+  paddingPx = 8,
+): RectBounds {
+  const pts = sampleQuadraticBezier(start, control, end, 32);
+  const b = bboxOf(pts);
+  return {
+    left: b.left - paddingPx,
+    top: b.top - paddingPx,
+    right: b.right + paddingPx,
+    bottom: b.bottom + paddingPx,
+    width: b.width + 2 * paddingPx,
+    height: b.height + 2 * paddingPx,
+  };
+}
+
 export function curvatureFromMidpoint(
   start: Point2D,
   end: Point2D,
@@ -533,4 +570,153 @@ export function hitTestQuadraticBezier(
 ): boolean {
   const sampled = sampleQuadraticBezier(start, control, end, 32);
   return hitTestPolyline(pt, sampled, tolPx);
+}
+
+export function computeCubicBaseControlPoints(
+  start: Point2D,
+  end: Point2D,
+): [Point2D, Point2D] {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (Math.abs(dx) >= 24) {
+    const base1 = {x: start.x + dx * 0.38, y: start.y + dy * 0.08};
+    const base2 = {x: end.x - dx * 0.38, y: end.y - dy * 0.08};
+    return [base1, base2];
+  } else {
+    const base1 = {x: start.x + dx * 0.33, y: start.y + dy * 0.33};
+    const base2 = {x: start.x + dx * 0.67, y: start.y + dy * 0.67};
+    return [base1, base2];
+  }
+}
+
+export function computeCubicControlPoints(
+  start: Point2D,
+  end: Point2D,
+  controlOffsets?: readonly [
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+  ],
+  legacyControlOffset?: {
+    readonly dxFrac?: number;
+    readonly dyPx?: number;
+    readonly alongFrac?: number;
+    readonly normalPx?: number;
+  },
+): [Point2D, Point2D] {
+  if (controlOffsets !== undefined) {
+    const [base1, base2] = computeCubicBaseControlPoints(start, end);
+    const span = Math.max(Math.hypot(end.x - start.x, end.y - start.y), 1);
+    const off0Dx = controlOffsets[0].dxFrac ?? controlOffsets[0].alongFrac ?? 0;
+    const off0Dy = controlOffsets[0].dyPx ?? controlOffsets[0].normalPx ?? 0;
+    const off1Dx = controlOffsets[1].dxFrac ?? controlOffsets[1].alongFrac ?? 0;
+    const off1Dy = controlOffsets[1].dyPx ?? controlOffsets[1].normalPx ?? 0;
+    return [
+      {x: base1.x + off0Dx * span, y: base1.y + off0Dy},
+      {x: base2.x + off1Dx * span, y: base2.y + off1Dy},
+    ];
+  }
+  if (legacyControlOffset !== undefined) {
+    const qCp = computeBezierControlPoint(start, end, legacyControlOffset);
+    const cp1 = {
+      x: start.x + (2 / 3) * (qCp.x - start.x),
+      y: start.y + (2 / 3) * (qCp.y - start.y),
+    };
+    const cp2 = {
+      x: end.x + (2 / 3) * (qCp.x - end.x),
+      y: end.y + (2 / 3) * (qCp.y - end.y),
+    };
+    return [cp1, cp2];
+  }
+  return computeCubicBaseControlPoints(start, end);
+}
+
+export function evaluateCubicBezier(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tt = t * t;
+  const uu = u * u;
+  const uuu = uu * u;
+  const ttt = tt * t;
+  return {
+    x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
+    y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
+  };
+}
+
+export function evaluateCubicBezierTangent(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const c0 = 3 * u * u;
+  const c1 = 6 * u * t;
+  const c2 = 3 * t * t;
+  const tx = c0 * (p1.x - p0.x) + c1 * (p2.x - p1.x) + c2 * (p3.x - p2.x);
+  const ty = c0 * (p1.y - p0.y) + c1 * (p2.y - p1.y) + c2 * (p3.y - p2.y);
+  if (Math.hypot(tx, ty) < 1e-3) {
+    return {x: p3.x - p0.x, y: p3.y - p0.y};
+  }
+  return {x: tx, y: ty};
+}
+
+export function hitTestCubicBezier(
+  pt: Point2D,
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  tolerancePx: number,
+  steps = 28,
+): boolean {
+  let prev = p0;
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const curr = evaluateCubicBezier(p0, p1, p2, p3, t);
+    if (distancePointToSegment(pt, prev, curr) <= tolerancePx) {
+      return true;
+    }
+    prev = curr;
+  }
+  return false;
+}
+
+export function computeCubicBezierBoundingBox(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  paddingPx = 8,
+): RectBounds {
+  const points: Point2D[] = [p0, p1, p2, p3];
+  const steps = 32;
+  for (let i = 1; i < steps; i += 1) {
+    points.push(evaluateCubicBezier(p0, p1, p2, p3, i / steps));
+  }
+  const b = bboxOf(points);
+  return {
+    left: b.left - paddingPx,
+    top: b.top - paddingPx,
+    right: b.right + paddingPx,
+    bottom: b.bottom + paddingPx,
+    width: b.width + 2 * paddingPx,
+    height: b.height + 2 * paddingPx,
+  };
 }

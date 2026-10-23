@@ -72,7 +72,13 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
             const inputElement = document.querySelector(
               `.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input`,
             ) as HTMLInputElement | null;
-            if (inputElement && tools.tool === 'label') {
+            const selected = store.selectedId
+              ? store.get(store.selectedId)
+              : undefined;
+            if (
+              inputElement &&
+              (selected?.kind === 'label' || tools.tool === 'label')
+            ) {
               inputElement.focus();
               inputElement.select();
             }
@@ -92,7 +98,29 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
     });
     trace.tracks.registerOverlay(overlay);
 
+    let prevAnnotationCount = store.list().length;
     const redrawDisposable = store.onChange(() => {
+      const currentCount = store.list().length;
+      if (currentCount > prevAnnotationCount) {
+        const selected = store.selectedId
+          ? store.get(store.selectedId)
+          : undefined;
+        if (selected?.kind === 'label') {
+          trace.tabs.showTab(ANNOTATIONS_TAB_URI);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const inputElement = document.querySelector(
+                `.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input`,
+              ) as HTMLInputElement | null;
+              if (inputElement) {
+                inputElement.focus();
+                inputElement.select();
+              }
+            });
+          });
+        }
+      }
+      prevAnnotationCount = currentCount;
       trace.raf.scheduleFullRedraw();
     });
     trace.trash.use(redrawDisposable);
@@ -168,7 +196,6 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
       }
       if (
         store.selectedId !== undefined &&
-        tools.tool === 'label' &&
         event.key.length === 1 &&
         !event.ctrlKey &&
         !event.metaKey &&

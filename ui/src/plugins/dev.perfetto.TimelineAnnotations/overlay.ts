@@ -23,20 +23,23 @@ import type {
   TrackBounds,
 } from '../../public/track';
 import type {TrackNode} from '../../public/workspace';
-import {type Annotation, type AnnotationStore, normalizeColor} from './model';
+import {
+  type Annotation,
+  type AnnotationStore,
+  type LabelFontFamily,
+  normalizeColor,
+} from './model';
 import {
   type ResolvedTrackY,
   resolveArea,
   resolvePoint,
   resolveTrackY,
 } from './anchor';
+import * as geomModule from './geometry';
 import {
   bboxOf,
   computeQuadraticControlPoint,
-  evaluateQuadraticBezier,
-  quadraticBezierEndAngle,
   type RectBounds,
-  sampleQuadraticBezier,
 } from './geometry';
 import type {AnnotationGeometry, ToolController} from './tools';
 
@@ -50,6 +53,209 @@ export interface RenderedAnnotationInfo {
 export interface AnnotationsOverlayOptions {
   readonly trackExists?: (uri: string) => boolean;
 }
+
+export const CREATION_ANIM_DURATION_MS = 450;
+const DELETE_ANIM_DURATION_MS = 180;
+const VISIBILITY_ANIM_DURATION_MS = 180;
+
+export function resolveCanvasFontFamily(fontFamily?: LabelFontFamily): string {
+  switch (fontFamily) {
+    case 'Roboto Condensed':
+      return '"Roboto Condensed", "Roboto", sans-serif';
+    case 'Roboto Mono':
+    case 'monospace':
+      return '"Roboto Mono", "JetBrains Mono", monospace';
+    case 'Google Sans':
+      return '"Google Sans", "Roboto", system-ui, sans-serif';
+    case 'Inter':
+      return '"Inter", "Roboto", system-ui, sans-serif';
+    case 'Georgia':
+    case 'serif':
+      return 'Georgia, "Times New Roman", serif';
+    case 'Roboto':
+    case 'sans-serif':
+    default:
+      return '"Roboto", "Inter", system-ui, sans-serif';
+  }
+}
+
+// Cubic bezier math helpers with fallback to geometry.ts
+export function localComputeCubicBaseControlPoints(
+  start: Point2D,
+  end: Point2D,
+): [Point2D, Point2D] {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  return [
+    {x: start.x + dx / 3, y: start.y + dy / 3},
+    {x: start.x + (2 * dx) / 3, y: start.y + (2 * dy) / 3},
+  ];
+}
+
+export function localComputeCubicControlPoints(
+  start: Point2D,
+  end: Point2D,
+  controlOffsets?: readonly [
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+  ],
+  legacyControlOffset?: {
+    readonly dxFrac?: number;
+    readonly dyPx?: number;
+    readonly alongFrac?: number;
+    readonly normalPx?: number;
+  },
+): [Point2D, Point2D] {
+  const [base1, base2] = localComputeCubicBaseControlPoints(start, end);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const span = Math.max(Math.hypot(dx, dy), 1);
+
+  if (controlOffsets && controlOffsets.length === 2) {
+    const off0Dx = controlOffsets[0].dxFrac ?? controlOffsets[0].alongFrac ?? 0;
+    const off0Dy = controlOffsets[0].dyPx ?? controlOffsets[0].normalPx ?? 0;
+    const off1Dx = controlOffsets[1].dxFrac ?? controlOffsets[1].alongFrac ?? 0;
+    const off1Dy = controlOffsets[1].dyPx ?? controlOffsets[1].normalPx ?? 0;
+    return [
+      {
+        x: base1.x + off0Dx * span,
+        y: base1.y + off0Dy,
+      },
+      {
+        x: base2.x + off1Dx * span,
+        y: base2.y + off1Dy,
+      },
+    ];
+  }
+
+  if (legacyControlOffset !== undefined) {
+    const normalPx =
+      legacyControlOffset.normalPx ?? legacyControlOffset.dyPx ?? 0;
+    let nx = 0;
+    let ny = -1;
+    if (span > 1e-6) {
+      nx = -dy / span;
+      ny = dx / span;
+    }
+    const dispX = nx * normalPx;
+    const dispY = ny * normalPx;
+    return [
+      {x: base1.x + dispX, y: base1.y + dispY},
+      {x: base2.x + dispX, y: base2.y + dispY},
+    ];
+  }
+
+  return [base1, base2];
+}
+
+export function localEvaluateCubicBezier(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tt = t * t;
+  const uu = u * u;
+  const uuu = uu * u;
+  const ttt = tt * t;
+  return {
+    x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
+    y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
+  };
+}
+
+export function localEvaluateCubicBezierTangent(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tangentX =
+    3 * u * u * (p1.x - p0.x) +
+    6 * u * t * (p2.x - p1.x) +
+    3 * t * t * (p3.x - p2.x);
+  const tangentY =
+    3 * u * u * (p1.y - p0.y) +
+    6 * u * t * (p2.y - p1.y) +
+    3 * t * t * (p3.y - p2.y);
+  if (Math.hypot(tangentX, tangentY) < 1e-4) {
+    return {x: p3.x - p0.x, y: p3.y - p0.y};
+  }
+  return {x: tangentX, y: tangentY};
+}
+
+export function localSampleCubicBezier(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  steps = 24,
+): Point2D[] {
+  const count = Math.max(2, steps);
+  const points: Point2D[] = [];
+  for (let index = 0; index <= count; index += 1) {
+    points.push(localEvaluateCubicBezier(p0, p1, p2, p3, index / count));
+  }
+  return points;
+}
+
+export function localComputeCubicBezierBoundingBox(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  paddingPx = 12,
+): RectBounds {
+  const sampled = localSampleCubicBezier(p0, p1, p2, p3, 24);
+  const baseBox = bboxOf(sampled);
+  return {
+    left: baseBox.left - paddingPx,
+    top: baseBox.top - paddingPx,
+    right: baseBox.right + paddingPx,
+    bottom: baseBox.bottom + paddingPx,
+    width: baseBox.width + 2 * paddingPx,
+    height: baseBox.height + 2 * paddingPx,
+  };
+}
+
+const computeCubicControlPoints =
+  (
+    geomModule as {
+      computeCubicControlPoints?: typeof localComputeCubicControlPoints;
+    }
+  ).computeCubicControlPoints ?? localComputeCubicControlPoints;
+
+const evaluateCubicBezier =
+  (geomModule as {evaluateCubicBezier?: typeof localEvaluateCubicBezier})
+    .evaluateCubicBezier ?? localEvaluateCubicBezier;
+
+const evaluateCubicBezierTangent =
+  (
+    geomModule as {
+      evaluateCubicBezierTangent?: typeof localEvaluateCubicBezierTangent;
+    }
+  ).evaluateCubicBezierTangent ?? localEvaluateCubicBezierTangent;
+
+const computeCubicBezierBoundingBox =
+  (
+    geomModule as {
+      computeCubicBezierBoundingBox?: typeof localComputeCubicBezierBoundingBox;
+    }
+  ).computeCubicBezierBoundingBox ?? localComputeCubicBezierBoundingBox;
 
 export function colorWithAlpha(color: string, alpha: number): string {
   const normalized = normalizeColor(color);
@@ -185,25 +391,26 @@ function renderTitlePill(
     | {readonly kind: 'arrow'; readonly midpoint: Point2D},
 ): void {
   const titleText = truncateText(title.trim(), 36);
-  ctx.font = '600 11px sans-serif';
+  ctx.font = '500 11px "Roboto", "Inter", system-ui, sans-serif';
   const textWidth = ctx.measureText(titleText).width;
-  const pillW = textWidth + 12;
-  const pillH = 18;
+  const paddingH = 7;
+  const pillH = 19;
+  const pillW = textWidth + paddingH * 2;
   let pillX: number;
   let pillY: number;
 
   if (target.kind === 'rect-or-ellipse') {
     pillX = target.bbox.left + 4;
-    pillY = target.bbox.top >= 22 ? target.bbox.top - 20 : target.bbox.top + 4;
+    pillY = target.bbox.top >= 23 ? target.bbox.top - 21 : target.bbox.top + 4;
   } else if (target.kind === 'path') {
     pillX = target.point.x + 4;
-    pillY = Math.max(2, target.point.y - 20);
+    pillY = Math.max(2, target.point.y - 21);
   } else {
     pillX = target.midpoint.x - pillW / 2;
     pillY = Math.max(2, target.midpoint.y - pillH - 6);
   }
 
-  drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 4);
+  drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 5);
   ctx.fillStyle = color;
   ctx.fill();
   ctx.lineWidth = 1.5;
@@ -212,7 +419,119 @@ function renderTitlePill(
   ctx.stroke();
   ctx.fillStyle = '#ffffff';
   ctx.textBaseline = 'middle';
-  ctx.fillText(titleText, pillX + 6, pillY + pillH / 2);
+  ctx.fillText(titleText, pillX + paddingH, pillY + pillH / 2);
+}
+
+function drawFourPointStar(
+  ctx: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  outerRadius: number,
+  innerRadius: number,
+  rotation = 0,
+): void {
+  ctx.beginPath();
+  for (let i = 0; i < 8; i += 1) {
+    const angle = rotation + (i * Math.PI) / 4;
+    const r = i % 2 === 0 ? outerRadius : innerRadius;
+    const px = centerX + r * Math.cos(angle);
+    const py = centerY + r * Math.sin(angle);
+    if (i === 0) {
+      ctx.moveTo(px, py);
+    } else {
+      ctx.lineTo(px, py);
+    }
+  }
+  ctx.closePath();
+}
+
+function renderCreationSparkles(
+  ctx: CanvasRenderingContext2D,
+  geom: AnnotationGeometry,
+  color: string,
+  rawT: number,
+): void {
+  if (rawT <= 0 || rawT >= 1) {
+    return;
+  }
+
+  // Soft glow ring in first 60%
+  if (rawT <= 0.6) {
+    const glowAlpha = (1 - rawT / 0.6) * 0.35;
+    ctx.save();
+    try {
+      ctx.strokeStyle = colorWithAlpha(color, glowAlpha);
+      ctx.lineWidth = 4;
+      ctx.setLineDash([]);
+      const pad = 4 + rawT * 8;
+      drawRoundedRect(
+        ctx,
+        geom.bbox.left - pad,
+        geom.bbox.top - pad,
+        geom.bbox.width + 2 * pad,
+        geom.bbox.height + 2 * pad,
+        8,
+      );
+      ctx.stroke();
+    } finally {
+      ctx.restore();
+    }
+  }
+
+  // 6 deterministic sparkles around perimeter
+  const numSparkles = 6;
+  const centerX = geom.bbox.left + geom.bbox.width / 2;
+  const centerY = geom.bbox.top + geom.bbox.height / 2;
+  const radiusX = geom.bbox.width / 2;
+  const radiusY = geom.bbox.height / 2;
+
+  // Scale: 0 -> 1 in first 35%, fades to 0 with twinkle
+  let scale = 0;
+  if (rawT < 0.35) {
+    scale = rawT / 0.35;
+  } else {
+    const fadeOut = (1 - rawT) / 0.65;
+    const twinkle = 0.8 + 0.2 * Math.sin(rawT * Math.PI * 3);
+    scale = Math.max(0, fadeOut * twinkle);
+  }
+
+  if (scale <= 0.05) {
+    return;
+  }
+
+  const driftDist = 4 + 10 * rawT;
+
+  ctx.save();
+  try {
+    for (let i = 0; i < numSparkles; i += 1) {
+      const angle = (2 * Math.PI * i) / numSparkles + 0.3;
+      const basePx = centerX + radiusX * Math.cos(angle);
+      const basePy = centerY + radiusY * Math.sin(angle);
+      const sparkX = basePx + driftDist * Math.cos(angle);
+      const sparkY = basePy + driftDist * Math.sin(angle);
+
+      const outerR = 5 * scale;
+      const innerR = 1.8 * scale;
+
+      drawFourPointStar(ctx, sparkX, sparkY, outerR, innerR, angle + rawT * 2);
+      ctx.fillStyle = colorWithAlpha(color, 0.9);
+      ctx.fill();
+
+      // White center highlight
+      drawFourPointStar(
+        ctx,
+        sparkX,
+        sparkY,
+        outerR * 0.45,
+        innerR * 0.45,
+        angle + rawT * 2,
+      );
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+    }
+  } finally {
+    ctx.restore();
+  }
 }
 
 export class AnnotationsOverlay implements Overlay {
@@ -259,6 +578,29 @@ export class AnnotationsOverlay implements Overlay {
     });
   }
 
+  public annotationHasExistingTracks(annotation: Annotation): boolean {
+    switch (annotation.kind) {
+      case 'rect':
+      case 'ellipse':
+        return annotation.anchor.trackUris.some((uri) => this.trackExists(uri));
+      case 'label':
+        return this.trackExists(annotation.position.trackUri);
+      case 'path':
+        return annotation.points.some((pt) => this.trackExists(pt.trackUri));
+      case 'arrow': {
+        const fromHit =
+          annotation.from.kind === 'point'
+            ? this.trackExists(annotation.from.point.trackUri)
+            : this.store.get(annotation.from.id) !== undefined;
+        const toHit =
+          annotation.to.kind === 'point'
+            ? this.trackExists(annotation.to.point.trackUri)
+            : this.store.get(annotation.to.id) !== undefined;
+        return fromHit || toHit;
+      }
+    }
+  }
+
   getCursor(): string | undefined {
     return this.tools.hoverCursor;
   }
@@ -283,18 +625,87 @@ export class AnnotationsOverlay implements Overlay {
       if (this.store.isHidden(geom.id)) {
         continue;
       }
-      if (geom.kind === 'arrow' && geom.curveMidpoint !== undefined) {
-        zones.push({
-          id: `arrow-curve:${geom.id}`,
-          area: {
-            x: geom.curveMidpoint.x - 8,
-            y: geom.curveMidpoint.y - 8,
-            width: 16,
-            height: 16,
-          },
-          cursor: 'grab',
-        });
+
+      if (geom.kind === 'arrow') {
+        if (geom.curveMidpoint !== undefined) {
+          zones.push({
+            id: `arrow-curve:${geom.id}`,
+            area: {
+              x: geom.curveMidpoint.x - 8,
+              y: geom.curveMidpoint.y - 8,
+              width: 16,
+              height: 16,
+            },
+            cursor: 'grab',
+          });
+        }
+        if (geom.controlPoints && geom.controlPoints.length === 2) {
+          const [cp1, cp2] = geom.controlPoints;
+          zones.push({
+            id: `arrow-control-1:${geom.id}`,
+            area: {
+              x: cp1.x - 8,
+              y: cp1.y - 8,
+              width: 16,
+              height: 16,
+            },
+            cursor: 'grab',
+          });
+          zones.push({
+            id: `arrow-control-2:${geom.id}`,
+            area: {
+              x: cp2.x - 8,
+              y: cp2.y - 8,
+              width: 16,
+              height: 16,
+            },
+            cursor: 'grab',
+          });
+        }
+
+        // Sample 8 points along curve with small 14x14 grab zones
+        if (geom.start && geom.end) {
+          const [cp1, cp2] = geom.controlPoints ?? [
+            geom.control ?? geom.start,
+            geom.control ?? geom.end,
+          ];
+          for (let step = 1; step <= 8; step += 1) {
+            const t = step / 9;
+            const pt = evaluateCubicBezier(geom.start, cp1, cp2, geom.end, t);
+            zones.push({
+              id: `annotation:${geom.id}`,
+              area: {
+                x: pt.x - 7,
+                y: pt.y - 7,
+                width: 14,
+                height: 14,
+              },
+              cursor: 'grab',
+            });
+          }
+        }
+        continue;
       }
+
+      if (geom.kind === 'path' && geom.polyline && geom.polyline.length > 0) {
+        // Sample up to 12 points along stroke with small 14x14 grab zones
+        const sampleStep = Math.max(1, Math.floor(geom.polyline.length / 12));
+        for (let i = 0; i < geom.polyline.length; i += sampleStep) {
+          const pt = geom.polyline[i];
+          zones.push({
+            id: `annotation:${geom.id}`,
+            area: {
+              x: pt.x - 7,
+              y: pt.y - 7,
+              width: 14,
+              height: 14,
+            },
+            cursor: 'grab',
+          });
+        }
+        continue;
+      }
+
       const width = Math.max(8, geom.bbox.width);
       const height = Math.max(8, geom.bbox.height);
       zones.push({
@@ -305,7 +716,7 @@ export class AnnotationsOverlay implements Overlay {
           width,
           height,
         },
-        cursor: 'move',
+        cursor: 'grab',
       });
     }
     return zones;
@@ -392,6 +803,8 @@ export class AnnotationsOverlay implements Overlay {
 
       const nextRenderedInfo = new Map<string, RenderedAnnotationInfo>();
       const geometriesMap = new Map<string, AnnotationGeometry>();
+      const liveMovePreview =
+        this.tools.preview?.kind === 'move' ? this.tools.preview : undefined;
 
       // Pass 1: Resolve geometry and compute status for all visible non-hidden annotations
       for (const annotation of annotationsList) {
@@ -400,9 +813,12 @@ export class AnnotationsOverlay implements Overlay {
         const visAnim = this.visibilityAnims.get(annotation.id);
         if (visAnim !== undefined) {
           const elapsed = now - visAnim.startMs;
-          if (elapsed < 180) {
+          if (elapsed < VISIBILITY_ANIM_DURATION_MS) {
             hasActiveAnims = true;
-            const t = Math.max(0, Math.min(1, elapsed / 180));
+            const t = Math.max(
+              0,
+              Math.min(1, elapsed / VISIBILITY_ANIM_DURATION_MS),
+            );
             const ease = 1 - Math.pow(1 - t, 3);
             animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
           } else {
@@ -448,12 +864,10 @@ export class AnnotationsOverlay implements Overlay {
 
             if (area === undefined) {
               if (anyExists) {
-                if (this.renderedAnnotationInfo.has(annotation.id)) {
-                  nextRenderedInfo.set(
-                    annotation.id,
-                    this.renderedAnnotationInfo.get(annotation.id)!,
-                  );
-                }
+                nextRenderedInfo.set(annotation.id, {
+                  status: 'exact',
+                  missing: [],
+                });
                 continue;
               }
               nextRenderedInfo.set(annotation.id, {
@@ -492,8 +906,9 @@ export class AnnotationsOverlay implements Overlay {
                 }
               }
 
-              const status: AnchorStatus =
-                hasDegradedTrack || area.missing.length > 0
+              const status: AnchorStatus = anyExists
+                ? 'exact'
+                : hasDegradedTrack || area.missing.length > 0
                   ? 'degraded'
                   : 'exact';
               nextRenderedInfo.set(annotation.id, {
@@ -531,21 +946,22 @@ export class AnnotationsOverlay implements Overlay {
               50,
             );
             const fontSize = annotation.fontSize ?? 12;
-            const fontFamily = annotation.fontFamily ?? 'sans-serif';
-            ctx.font = `${fontSize}px ${fontFamily}`;
+            const fontCss = resolveCanvasFontFamily(annotation.fontFamily);
+            ctx.font =
+              annotation.fontFamily === 'monospace'
+                ? `${fontSize}px monospace`
+                : `500 ${fontSize}px ${fontCss}`;
             const textMetrics = ctx.measureText(labelText);
-            const padX = Math.max(6, Math.round(fontSize * 0.5));
+            const padX = Math.max(8, Math.round(fontSize * 0.5));
             const labelHeight = Math.max(18, Math.round(fontSize * 1.5));
             const labelWidth = textMetrics.width + padX * 2;
 
             if (pointRes === undefined) {
               if (exists) {
-                if (this.renderedAnnotationInfo.has(annotation.id)) {
-                  nextRenderedInfo.set(
-                    annotation.id,
-                    this.renderedAnnotationInfo.get(annotation.id)!,
-                  );
-                }
+                nextRenderedInfo.set(annotation.id, {
+                  status: 'exact',
+                  missing: [],
+                });
                 continue;
               }
               nextRenderedInfo.set(annotation.id, {
@@ -565,8 +981,11 @@ export class AnnotationsOverlay implements Overlay {
                 },
               });
             } else {
-              const status: AnchorStatus =
-                pointRes.status === 'exact' ? 'exact' : 'degraded';
+              const status: AnchorStatus = exists
+                ? 'exact'
+                : pointRes.status === 'exact'
+                  ? 'exact'
+                  : 'degraded';
               nextRenderedInfo.set(annotation.id, {
                 status,
                 missing: [],
@@ -610,17 +1029,16 @@ export class AnnotationsOverlay implements Overlay {
               }
             }
 
+            const anyExists = annotation.points.some((pt) =>
+              this.trackExists(pt.trackUri),
+            );
+
             if (polyline.length === 0) {
-              const anyExists = annotation.points.some((pt) =>
-                this.trackExists(pt.trackUri),
-              );
               if (anyExists) {
-                if (this.renderedAnnotationInfo.has(annotation.id)) {
-                  nextRenderedInfo.set(
-                    annotation.id,
-                    this.renderedAnnotationInfo.get(annotation.id)!,
-                  );
-                }
+                nextRenderedInfo.set(annotation.id, {
+                  status: 'exact',
+                  missing: [],
+                });
                 continue;
               }
             }
@@ -628,6 +1046,8 @@ export class AnnotationsOverlay implements Overlay {
             let status: AnchorStatus = 'exact';
             if (polyline.length === 0) {
               status = 'unanchored';
+            } else if (anyExists) {
+              status = 'exact';
             } else if (hasDegraded || missingUris.length > 0) {
               status = 'degraded';
             }
@@ -651,6 +1071,32 @@ export class AnnotationsOverlay implements Overlay {
         }
       }
 
+      // Apply live move delta to geometry if dragging in select mode
+      if (liveMovePreview !== undefined) {
+        const movedGeom = geometriesMap.get(liveMovePreview.annotationId);
+        if (movedGeom !== undefined) {
+          const dx = liveMovePreview.deltaX;
+          const dy = liveMovePreview.deltaY;
+          const shiftedBbox: RectBounds = {
+            left: movedGeom.bbox.left + dx,
+            top: movedGeom.bbox.top + dy,
+            right: movedGeom.bbox.right + dx,
+            bottom: movedGeom.bbox.bottom + dy,
+            width: movedGeom.bbox.width,
+            height: movedGeom.bbox.height,
+          };
+          const shiftedPolyline = movedGeom.polyline?.map((p) => ({
+            x: p.x + dx,
+            y: p.y + dy,
+          }));
+          geometriesMap.set(liveMovePreview.annotationId, {
+            ...movedGeom,
+            bbox: shiftedBbox,
+            ...(shiftedPolyline ? {polyline: shiftedPolyline} : {}),
+          });
+        }
+      }
+
       // Pass 2: Draw non-arrow shapes
       for (const annotation of annotationsList) {
         if (annotation.kind === 'arrow') {
@@ -667,8 +1113,11 @@ export class AnnotationsOverlay implements Overlay {
         const visAnim = this.visibilityAnims.get(annotation.id);
         if (visAnim !== undefined) {
           const elapsed = now - visAnim.startMs;
-          if (elapsed < 180) {
-            const t = Math.max(0, Math.min(1, elapsed / 180));
+          if (elapsed < VISIBILITY_ANIM_DURATION_MS) {
+            const t = Math.max(
+              0,
+              Math.min(1, elapsed / VISIBILITY_ANIM_DURATION_MS),
+            );
             const ease = 1 - Math.pow(1 - t, 3);
             animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
           }
@@ -727,22 +1176,25 @@ export class AnnotationsOverlay implements Overlay {
           const creationAnim = this.creationAnims.get(annotation.id);
           if (creationAnim !== undefined) {
             const elapsed = now - creationAnim.startMs;
-            if (elapsed < 220) {
+            if (elapsed < CREATION_ANIM_DURATION_MS) {
               hasActiveAnims = true;
-              const t = Math.max(0, Math.min(1, elapsed / 220));
-              const ease = 1 - Math.pow(1 - t, 3);
+              const rawT = Math.max(
+                0,
+                Math.min(1, elapsed / CREATION_ANIM_DURATION_MS),
+              );
+              const easeOut = 1 - Math.pow(1 - rawT, 3.2);
               const left =
                 creationAnim.fromRect.left +
-                (geometry.bbox.left - creationAnim.fromRect.left) * ease;
+                (geometry.bbox.left - creationAnim.fromRect.left) * easeOut;
               const top =
                 creationAnim.fromRect.top +
-                (geometry.bbox.top - creationAnim.fromRect.top) * ease;
+                (geometry.bbox.top - creationAnim.fromRect.top) * easeOut;
               const right =
                 creationAnim.fromRect.right +
-                (geometry.bbox.right - creationAnim.fromRect.right) * ease;
+                (geometry.bbox.right - creationAnim.fromRect.right) * easeOut;
               const bottom =
                 creationAnim.fromRect.bottom +
-                (geometry.bbox.bottom - creationAnim.fromRect.bottom) * ease;
+                (geometry.bbox.bottom - creationAnim.fromRect.bottom) * easeOut;
               renderBbox = {
                 left,
                 top,
@@ -751,6 +1203,7 @@ export class AnnotationsOverlay implements Overlay {
                 width: right - left,
                 height: bottom - top,
               };
+              renderCreationSparkles(ctx, geometry, annotation.color, rawT);
             } else {
               this.creationAnims.delete(annotation.id);
             }
@@ -919,9 +1372,12 @@ export class AnnotationsOverlay implements Overlay {
                 50,
               );
               const fontSize = annotation.fontSize ?? 12;
-              const fontFamily = annotation.fontFamily ?? 'sans-serif';
-              ctx.font = `${fontSize}px ${fontFamily}`;
-              const padX = Math.max(6, Math.round(fontSize * 0.5));
+              const fontCss = resolveCanvasFontFamily(annotation.fontFamily);
+              ctx.font =
+                annotation.fontFamily === 'monospace'
+                  ? `${fontSize}px monospace`
+                  : `500 ${fontSize}px ${fontCss}`;
+              const padX = Math.max(8, Math.round(fontSize * 0.5));
 
               drawRoundedRect(
                 ctx,
@@ -929,7 +1385,7 @@ export class AnnotationsOverlay implements Overlay {
                 geometry.bbox.top,
                 geometry.bbox.width,
                 geometry.bbox.height,
-                4,
+                6,
               );
 
               if (annotation.backgroundColor === 'transparent') {
@@ -974,8 +1430,11 @@ export class AnnotationsOverlay implements Overlay {
         const visAnim = this.visibilityAnims.get(annotation.id);
         if (visAnim !== undefined) {
           const elapsed = now - visAnim.startMs;
-          if (elapsed < 180) {
-            const t = Math.max(0, Math.min(1, elapsed / 180));
+          if (elapsed < VISIBILITY_ANIM_DURATION_MS) {
+            const t = Math.max(
+              0,
+              Math.min(1, elapsed / VISIBILITY_ANIM_DURATION_MS),
+            );
             const ease = 1 - Math.pow(1 - t, 3);
             animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
           }
@@ -1063,23 +1522,21 @@ export class AnnotationsOverlay implements Overlay {
           }
         }
 
-        if (startPoint === undefined || endPoint === undefined) {
-          const fromExists =
-            annotation.from.kind === 'point'
-              ? this.trackExists(annotation.from.point.trackUri)
-              : this.store.get(annotation.from.id) !== undefined;
-          const toExists =
-            annotation.to.kind === 'point'
-              ? this.trackExists(annotation.to.point.trackUri)
-              : this.store.get(annotation.to.id) !== undefined;
+        const fromExists =
+          annotation.from.kind === 'point'
+            ? this.trackExists(annotation.from.point.trackUri)
+            : this.store.get(annotation.from.id) !== undefined;
+        const toExists =
+          annotation.to.kind === 'point'
+            ? this.trackExists(annotation.to.point.trackUri)
+            : this.store.get(annotation.to.id) !== undefined;
 
+        if (startPoint === undefined || endPoint === undefined) {
           if (fromExists && toExists) {
-            if (this.renderedAnnotationInfo.has(annotation.id)) {
-              nextRenderedInfo.set(
-                annotation.id,
-                this.renderedAnnotationInfo.get(annotation.id)!,
-              );
-            }
+            nextRenderedInfo.set(annotation.id, {
+              status: 'exact',
+              missing: [],
+            });
             continue;
           }
         }
@@ -1087,6 +1544,8 @@ export class AnnotationsOverlay implements Overlay {
         let status: AnchorStatus = 'exact';
         if (startPoint === undefined || endPoint === undefined) {
           status = 'unanchored';
+        } else if (fromExists || toExists) {
+          status = 'exact';
         } else if (hasDegraded || missingUris.length > 0) {
           status = 'degraded';
         }
@@ -1097,52 +1556,41 @@ export class AnnotationsOverlay implements Overlay {
         });
 
         if (startPoint !== undefined && endPoint !== undefined) {
-          const curvature =
-            annotation.controlOffset?.normalPx ?? annotation.curvature ?? 0;
-          const alongFrac = annotation.controlOffset?.alongFrac ?? 0.5;
-
-          let curveMidpoint: Point2D;
-          let controlPoint: Point2D | undefined;
-          let sampledPolyline: Point2D[] | undefined;
-          let arrowBbox: RectBounds;
-          let arrowAngle: number;
-
-          if (Math.abs(curvature) > 0.5) {
-            controlPoint = computeQuadraticControlPoint(
-              startPoint,
-              endPoint,
-              curvature,
-              alongFrac,
-            );
-            curveMidpoint = evaluateQuadraticBezier(
-              startPoint,
-              controlPoint,
-              endPoint,
-              0.5,
-            );
-            sampledPolyline = sampleQuadraticBezier(
-              startPoint,
-              controlPoint,
-              endPoint,
-              16,
-            );
-            arrowBbox = bboxOf(sampledPolyline);
-            arrowAngle = quadraticBezierEndAngle(
-              startPoint,
-              controlPoint,
-              endPoint,
-            );
-          } else {
-            curveMidpoint = {
-              x: (startPoint.x + endPoint.x) / 2,
-              y: (startPoint.y + endPoint.y) / 2,
+          // If live move is active on this arrow, shift endpoints
+          if (
+            liveMovePreview !== undefined &&
+            liveMovePreview.annotationId === annotation.id
+          ) {
+            startPoint = {
+              x: startPoint.x + liveMovePreview.deltaX,
+              y: startPoint.y + liveMovePreview.deltaY,
             };
-            arrowBbox = bboxOf([startPoint, endPoint]);
-            arrowAngle = Math.atan2(
-              endPoint.y - startPoint.y,
-              endPoint.x - startPoint.x,
-            );
+            endPoint = {
+              x: endPoint.x + liveMovePreview.deltaX,
+              y: endPoint.y + liveMovePreview.deltaY,
+            };
           }
+
+          const [cp1, cp2] = computeCubicControlPoints(
+            startPoint,
+            endPoint,
+            annotation.controlOffsets,
+            annotation.controlOffset,
+          );
+          const curveMidpoint = evaluateCubicBezier(
+            startPoint,
+            cp1,
+            cp2,
+            endPoint,
+            0.5,
+          );
+          const arrowBbox = computeCubicBezierBoundingBox(
+            startPoint,
+            cp1,
+            cp2,
+            endPoint,
+            12,
+          );
 
           const isSelected = this.store.selectedId === annotation.id;
 
@@ -1152,11 +1600,9 @@ export class AnnotationsOverlay implements Overlay {
             bbox: arrowBbox,
             start: startPoint,
             end: endPoint,
-            ...(controlPoint !== undefined ? {control: controlPoint} : {}),
+            control: cp1,
+            controlPoints: [cp1, cp2],
             curveMidpoint,
-            ...(sampledPolyline !== undefined
-              ? {polyline: sampledPolyline}
-              : {}),
           };
           geometriesMap.set(annotation.id, arrowGeometry);
           this.lastKnownAnnotations.set(annotation.id, {
@@ -1175,74 +1621,154 @@ export class AnnotationsOverlay implements Overlay {
                 annotation.fillColor !== undefined &&
                 annotation.fillColor !== 'transparent';
 
+              const tangent = evaluateCubicBezierTangent(
+                startPoint,
+                cp1,
+                cp2,
+                endPoint,
+                1,
+              );
+              const angle = Math.atan2(tangent.y, tangent.x);
+
+              const headLength = 11;
+              const backset = 8.5;
+              const wingAngle = Math.PI / 6.5;
+
+              const totalArrowLen = Math.hypot(
+                endPoint.x - startPoint.x,
+                endPoint.y - startPoint.y,
+              );
+              const shaftEnd =
+                totalArrowLen < headLength * 1.5
+                  ? endPoint
+                  : {
+                      x: endPoint.x - backset * Math.cos(angle),
+                      y: endPoint.y - backset * Math.sin(angle),
+                    };
+
+              const wing1 = {
+                x: endPoint.x - headLength * Math.cos(angle - wingAngle),
+                y: endPoint.y - headLength * Math.sin(angle - wingAngle),
+              };
+              const notch = {
+                x: endPoint.x - backset * Math.cos(angle),
+                y: endPoint.y - backset * Math.sin(angle),
+              };
+              const wing2 = {
+                x: endPoint.x - headLength * Math.cos(angle + wingAngle),
+                y: endPoint.y - headLength * Math.sin(angle + wingAngle),
+              };
+
+              // 1. Under-glow / custom fill
               if (hasCustomFill) {
                 ctx.beginPath();
                 ctx.moveTo(startPoint.x, startPoint.y);
-                if (controlPoint !== undefined) {
-                  if (typeof ctx.quadraticCurveTo === 'function') {
-                    ctx.quadraticCurveTo(
-                      controlPoint.x,
-                      controlPoint.y,
-                      endPoint.x,
-                      endPoint.y,
-                    );
-                  } else {
-                    for (const pt of sampledPolyline!) {
-                      ctx.lineTo(pt.x, pt.y);
-                    }
-                  }
+                if (typeof ctx.bezierCurveTo === 'function') {
+                  ctx.bezierCurveTo(
+                    cp1.x,
+                    cp1.y,
+                    cp2.x,
+                    cp2.y,
+                    shaftEnd.x,
+                    shaftEnd.y,
+                  );
+                } else if (typeof ctx.quadraticCurveTo === 'function') {
+                  const quadCp = computeQuadraticControlPoint(
+                    startPoint,
+                    endPoint,
+                    annotation.controlOffset?.normalPx ??
+                      annotation.curvature ??
+                      0,
+                  );
+                  ctx.quadraticCurveTo(
+                    quadCp.x,
+                    quadCp.y,
+                    shaftEnd.x,
+                    shaftEnd.y,
+                  );
                 } else {
-                  ctx.lineTo(endPoint.x, endPoint.y);
+                  ctx.lineTo(shaftEnd.x, shaftEnd.y);
                 }
                 ctx.lineWidth = 6;
                 ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
                 ctx.stroke();
               }
 
-              // Contrast halo / casing
+              // 2. Contrast halo / casing
               ctx.beginPath();
               ctx.moveTo(startPoint.x, startPoint.y);
-              if (controlPoint !== undefined) {
-                if (typeof ctx.quadraticCurveTo === 'function') {
-                  ctx.quadraticCurveTo(
-                    controlPoint.x,
-                    controlPoint.y,
-                    endPoint.x,
-                    endPoint.y,
-                  );
-                } else {
-                  for (const pt of sampledPolyline!) {
-                    ctx.lineTo(pt.x, pt.y);
-                  }
-                }
+              if (typeof ctx.bezierCurveTo === 'function') {
+                ctx.bezierCurveTo(
+                  cp1.x,
+                  cp1.y,
+                  cp2.x,
+                  cp2.y,
+                  shaftEnd.x,
+                  shaftEnd.y,
+                );
+              } else if (typeof ctx.quadraticCurveTo === 'function') {
+                const quadCp = computeQuadraticControlPoint(
+                  startPoint,
+                  endPoint,
+                  annotation.controlOffset?.normalPx ??
+                    annotation.curvature ??
+                    0,
+                );
+                ctx.quadraticCurveTo(
+                  quadCp.x,
+                  quadCp.y,
+                  shaftEnd.x,
+                  shaftEnd.y,
+                );
               } else {
-                ctx.lineTo(endPoint.x, endPoint.y);
+                ctx.lineTo(shaftEnd.x, shaftEnd.y);
               }
               ctx.lineWidth = isSelected ? 6 : 5;
               ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
               ctx.setLineDash([]);
               ctx.stroke();
 
-              // Primary stroke
+              // Arrowhead halo casing
+              ctx.beginPath();
+              ctx.moveTo(endPoint.x, endPoint.y);
+              ctx.lineTo(wing1.x, wing1.y);
+              ctx.lineTo(notch.x, notch.y);
+              ctx.lineTo(wing2.x, wing2.y);
+              ctx.closePath();
+              ctx.lineWidth = isSelected ? 6 : 5;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+              ctx.stroke();
+
+              // 3. Primary stroke
               ctx.beginPath();
               ctx.moveTo(startPoint.x, startPoint.y);
-              if (controlPoint !== undefined) {
-                if (typeof ctx.quadraticCurveTo === 'function') {
-                  ctx.quadraticCurveTo(
-                    controlPoint.x,
-                    controlPoint.y,
-                    endPoint.x,
-                    endPoint.y,
-                  );
-                } else {
-                  for (const pt of sampledPolyline!) {
-                    ctx.lineTo(pt.x, pt.y);
-                  }
-                }
+              if (typeof ctx.bezierCurveTo === 'function') {
+                ctx.bezierCurveTo(
+                  cp1.x,
+                  cp1.y,
+                  cp2.x,
+                  cp2.y,
+                  shaftEnd.x,
+                  shaftEnd.y,
+                );
+              } else if (typeof ctx.quadraticCurveTo === 'function') {
+                const quadCp = computeQuadraticControlPoint(
+                  startPoint,
+                  endPoint,
+                  annotation.controlOffset?.normalPx ??
+                    annotation.curvature ??
+                    0,
+                );
+                ctx.quadraticCurveTo(
+                  quadCp.x,
+                  quadCp.y,
+                  shaftEnd.x,
+                  shaftEnd.y,
+                );
               } else {
-                ctx.lineTo(endPoint.x, endPoint.y);
+                ctx.lineTo(shaftEnd.x, shaftEnd.y);
               }
-              ctx.lineWidth = isSelected ? 3 : 2.5;
+              ctx.lineWidth = isSelected ? 3 : 2.25;
               ctx.strokeStyle = annotation.color;
               if (status === 'degraded') {
                 ctx.setLineDash([4, 4]);
@@ -1252,46 +1778,26 @@ export class AnnotationsOverlay implements Overlay {
               ctx.stroke();
               ctx.setLineDash([]);
 
-              // Draw arrowhead at endPoint
-              const headLength = 10;
-              const headAngle = Math.PI / 6;
-              const leftArrowPt = {
-                x: endPoint.x - headLength * Math.cos(arrowAngle - headAngle),
-                y: endPoint.y - headLength * Math.sin(arrowAngle - headAngle),
-              };
-              const rightArrowPt = {
-                x: endPoint.x - headLength * Math.cos(arrowAngle + headAngle),
-                y: endPoint.y - headLength * Math.sin(arrowAngle + headAngle),
-              };
-
-              if (hasCustomFill) {
-                ctx.beginPath();
-                ctx.moveTo(endPoint.x, endPoint.y);
-                ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
-                ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
-                ctx.closePath();
-                ctx.fillStyle = getAnnotationFillStyle(annotation, 0.4);
-                ctx.fill();
+              // 4. Start anchor dot
+              ctx.beginPath();
+              if (typeof ctx.arc === 'function') {
+                ctx.arc(startPoint.x, startPoint.y, 3, 0, Math.PI * 2);
+              } else {
+                ctx.rect(startPoint.x - 3, startPoint.y - 3, 6, 6);
               }
+              ctx.fillStyle = annotation.color;
+              ctx.fill();
 
-              // Arrowhead halo casing
+              // 5. Crisp filled arrowhead polygon
               ctx.beginPath();
               ctx.moveTo(endPoint.x, endPoint.y);
-              ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
-              ctx.moveTo(endPoint.x, endPoint.y);
-              ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
-              ctx.lineWidth = isSelected ? 6 : 5;
-              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
-              ctx.setLineDash([]);
-              ctx.stroke();
-
-              // Arrowhead primary stroke
-              ctx.beginPath();
-              ctx.moveTo(endPoint.x, endPoint.y);
-              ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
-              ctx.moveTo(endPoint.x, endPoint.y);
-              ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
-              ctx.lineWidth = isSelected ? 3 : 2.5;
+              ctx.lineTo(wing1.x, wing1.y);
+              ctx.lineTo(notch.x, notch.y);
+              ctx.lineTo(wing2.x, wing2.y);
+              ctx.closePath();
+              ctx.fillStyle = annotation.color;
+              ctx.fill();
+              ctx.lineWidth = 1;
               ctx.strokeStyle = annotation.color;
               ctx.stroke();
 
@@ -1343,64 +1849,76 @@ export class AnnotationsOverlay implements Overlay {
               ctx.fillRect(corner.x - 3, corner.y - 3, 6, 6);
               ctx.strokeRect(corner.x - 3, corner.y - 3, 6, 6);
             }
-          } else if (
-            selectedGeom.kind === 'arrow' &&
-            selectedGeom.curveMidpoint !== undefined
-          ) {
-            ctx.beginPath();
-            if (typeof ctx.arc === 'function') {
-              ctx.arc(
-                selectedGeom.curveMidpoint.x,
-                selectedGeom.curveMidpoint.y,
-                4.5,
-                0,
-                Math.PI * 2,
-              );
-            } else {
-              ctx.rect(
-                selectedGeom.curveMidpoint.x - 4,
-                selectedGeom.curveMidpoint.y - 4,
-                8,
-                8,
-              );
-            }
-            ctx.fillStyle = theme.COLOR_ACCENT;
-            ctx.fill();
-            ctx.strokeStyle = theme.COLOR_BACKGROUND;
-            ctx.lineWidth = 1;
-            ctx.stroke();
+          } else if (selectedGeom.kind === 'arrow') {
+            if (
+              selectedGeom.start !== undefined &&
+              selectedGeom.end !== undefined
+            ) {
+              const [cp1, cp2] = selectedGeom.controlPoints ?? [
+                selectedGeom.control ?? selectedGeom.start,
+                selectedGeom.control ?? selectedGeom.end,
+              ];
 
-            if (selectedGeom.start !== undefined) {
-              ctx.fillStyle = theme.COLOR_BACKGROUND;
-              ctx.strokeStyle = theme.COLOR_ACCENT;
-              ctx.fillRect(
-                selectedGeom.start.x - 3,
-                selectedGeom.start.y - 3,
-                6,
-                6,
-              );
-              ctx.strokeRect(
-                selectedGeom.start.x - 3,
-                selectedGeom.start.y - 3,
-                6,
-                6,
-              );
-            }
-            if (selectedGeom.end !== undefined) {
-              ctx.fillStyle = theme.COLOR_BACKGROUND;
-              ctx.strokeStyle = theme.COLOR_ACCENT;
-              ctx.fillRect(
-                selectedGeom.end.x - 3,
-                selectedGeom.end.y - 3,
-                6,
-                6,
-              );
-              ctx.strokeRect(
-                selectedGeom.end.x - 3,
-                selectedGeom.end.y - 3,
-                6,
-                6,
-              );
+              // Dashed tangent guide lines
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_ACCENT, 0.45);
+              ctx.lineWidth = 1;
+              ctx.setLineDash([2, 2]);
+              ctx.beginPath();
+              ctx.moveTo(selectedGeom.start.x, selectedGeom.start.y);
+              ctx.lineTo(cp1.x, cp1.y);
+              ctx.moveTo(selectedGeom.end.x, selectedGeom.end.y);
+              ctx.lineTo(cp2.x, cp2.y);
+              ctx.stroke();
+              ctx.setLineDash([]);
+
+              // Render cp1 and cp2 handles
+              for (const cp of [cp1, cp2]) {
+                ctx.beginPath();
+                if (typeof ctx.arc === 'function') {
+                  ctx.arc(cp.x, cp.y, 4, 0, Math.PI * 2);
+                } else {
+                  ctx.rect(cp.x - 4, cp.y - 4, 8, 8);
+                }
+                ctx.fillStyle = theme.COLOR_ACCENT;
+                ctx.fill();
+                ctx.strokeStyle = theme.COLOR_BACKGROUND;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+              }
+
+              // Midpoint handle
+              if (selectedGeom.curveMidpoint !== undefined) {
+                ctx.beginPath();
+                if (typeof ctx.arc === 'function') {
+                  ctx.arc(
+                    selectedGeom.curveMidpoint.x,
+                    selectedGeom.curveMidpoint.y,
+                    4,
+                    0,
+                    Math.PI * 2,
+                  );
+                } else {
+                  ctx.rect(
+                    selectedGeom.curveMidpoint.x - 4,
+                    selectedGeom.curveMidpoint.y - 4,
+                    8,
+                    8,
+                  );
+                }
+                ctx.fillStyle = theme.COLOR_BACKGROUND;
+                ctx.fill();
+                ctx.strokeStyle = theme.COLOR_ACCENT;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+              }
+
+              // Start and end anchor handles
+              for (const endpoint of [selectedGeom.start, selectedGeom.end]) {
+                ctx.fillStyle = theme.COLOR_BACKGROUND;
+                ctx.strokeStyle = theme.COLOR_ACCENT;
+                ctx.fillRect(endpoint.x - 3, endpoint.y - 3, 6, 6);
+                ctx.strokeRect(endpoint.x - 3, endpoint.y - 3, 6, 6);
+              }
             }
           }
         }
@@ -1409,16 +1927,19 @@ export class AnnotationsOverlay implements Overlay {
       // Render active delete animations
       for (const [id, delAnim] of this.deleteAnims.entries()) {
         const elapsed = now - delAnim.startMs;
-        if (elapsed < 180) {
+        if (elapsed < DELETE_ANIM_DURATION_MS) {
           hasActiveAnims = true;
-          const t = Math.max(0, Math.min(1, elapsed / 180));
-          const ease = 1 - Math.pow(1 - t, 3);
+          const rawT = Math.max(
+            0,
+            Math.min(1, elapsed / DELETE_ANIM_DURATION_MS),
+          );
+          const easeIn = Math.pow(rawT, 2.5);
           ctx.save();
           try {
-            ctx.globalAlpha = (1 - ease) * 0.7;
+            ctx.globalAlpha = (1 - easeIn) * 0.7;
             ctx.strokeStyle = delAnim.annotation.color;
             ctx.lineWidth = 2;
-            const inset = ease * 4;
+            const inset = easeIn * 4;
             const b = delAnim.geometry.bbox;
             ctx.strokeRect(
               b.left + inset,
@@ -1439,25 +1960,47 @@ export class AnnotationsOverlay implements Overlay {
       if (preview !== undefined) {
         switch (preview.kind) {
           case 'arrow-curve': {
+            const [cp1, cp2] = preview.controlPoints ?? [
+              preview.control,
+              preview.control,
+            ];
+            const tangent = evaluateCubicBezierTangent(
+              preview.start,
+              cp1,
+              cp2,
+              preview.end,
+              1,
+            );
+            const angle = Math.atan2(tangent.y, tangent.x);
+            const headLength = 11;
+            const backset = 8.5;
+            const wingAngle = Math.PI / 6.5;
+
+            const shaftEnd = {
+              x: preview.end.x - backset * Math.cos(angle),
+              y: preview.end.y - backset * Math.sin(angle),
+            };
+
             ctx.beginPath();
             ctx.moveTo(preview.start.x, preview.start.y);
-            if (typeof ctx.quadraticCurveTo === 'function') {
+            if (typeof ctx.bezierCurveTo === 'function') {
+              ctx.bezierCurveTo(
+                cp1.x,
+                cp1.y,
+                cp2.x,
+                cp2.y,
+                shaftEnd.x,
+                shaftEnd.y,
+              );
+            } else if (typeof ctx.quadraticCurveTo === 'function') {
               ctx.quadraticCurveTo(
                 preview.control.x,
                 preview.control.y,
-                preview.end.x,
-                preview.end.y,
+                shaftEnd.x,
+                shaftEnd.y,
               );
             } else {
-              const sampled = sampleQuadraticBezier(
-                preview.start,
-                preview.control,
-                preview.end,
-                16,
-              );
-              for (const pt of sampled) {
-                ctx.lineTo(pt.x, pt.y);
-              }
+              ctx.lineTo(shaftEnd.x, shaftEnd.y);
             }
             ctx.lineWidth = 2;
             ctx.strokeStyle = preview.color;
@@ -1465,25 +2008,21 @@ export class AnnotationsOverlay implements Overlay {
             ctx.stroke();
             ctx.setLineDash([]);
 
-            const angle = quadraticBezierEndAngle(
-              preview.start,
-              preview.control,
-              preview.end,
-            );
-            const headLength = 10;
-            const headAngle = Math.PI / 6;
+            // Arrowhead
             ctx.beginPath();
             ctx.moveTo(preview.end.x, preview.end.y);
             ctx.lineTo(
-              preview.end.x - headLength * Math.cos(angle - headAngle),
-              preview.end.y - headLength * Math.sin(angle - headAngle),
+              preview.end.x - headLength * Math.cos(angle - wingAngle),
+              preview.end.y - headLength * Math.sin(angle - wingAngle),
             );
-            ctx.moveTo(preview.end.x, preview.end.y);
+            ctx.lineTo(shaftEnd.x, shaftEnd.y);
             ctx.lineTo(
-              preview.end.x - headLength * Math.cos(angle + headAngle),
-              preview.end.y - headLength * Math.sin(angle + headAngle),
+              preview.end.x - headLength * Math.cos(angle + wingAngle),
+              preview.end.y - headLength * Math.sin(angle + wingAngle),
             );
-            ctx.stroke();
+            ctx.closePath();
+            ctx.fillStyle = preview.color;
+            ctx.fill();
             break;
           }
           case 'rect': {
@@ -1533,31 +2072,58 @@ export class AnnotationsOverlay implements Overlay {
             break;
           }
           case 'arrow': {
+            const [cp1, cp2] = localComputeCubicBaseControlPoints(
+              preview.from,
+              preview.to,
+            );
+            const tangent = evaluateCubicBezierTangent(
+              preview.from,
+              cp1,
+              cp2,
+              preview.to,
+              1,
+            );
+            const angle = Math.atan2(tangent.y, tangent.x);
+            const headLength = 11;
+            const backset = 8.5;
+            const wingAngle = Math.PI / 6.5;
+            const shaftEnd = {
+              x: preview.to.x - backset * Math.cos(angle),
+              y: preview.to.y - backset * Math.sin(angle),
+            };
+
             ctx.beginPath();
             ctx.moveTo(preview.from.x, preview.from.y);
-            ctx.lineTo(preview.to.x, preview.to.y);
+            if (typeof ctx.bezierCurveTo === 'function') {
+              ctx.bezierCurveTo(
+                cp1.x,
+                cp1.y,
+                cp2.x,
+                cp2.y,
+                shaftEnd.x,
+                shaftEnd.y,
+              );
+            } else {
+              ctx.lineTo(shaftEnd.x, shaftEnd.y);
+            }
             ctx.lineWidth = 2;
             ctx.strokeStyle = preview.color;
             ctx.stroke();
 
-            const angle = Math.atan2(
-              preview.to.y - preview.from.y,
-              preview.to.x - preview.from.x,
-            );
-            const headLength = 10;
-            const headAngle = Math.PI / 6;
             ctx.beginPath();
             ctx.moveTo(preview.to.x, preview.to.y);
             ctx.lineTo(
-              preview.to.x - headLength * Math.cos(angle - headAngle),
-              preview.to.y - headLength * Math.sin(angle - headAngle),
+              preview.to.x - headLength * Math.cos(angle - wingAngle),
+              preview.to.y - headLength * Math.sin(angle - wingAngle),
             );
-            ctx.moveTo(preview.to.x, preview.to.y);
+            ctx.lineTo(shaftEnd.x, shaftEnd.y);
             ctx.lineTo(
-              preview.to.x - headLength * Math.cos(angle + headAngle),
-              preview.to.y - headLength * Math.sin(angle + headAngle),
+              preview.to.x - headLength * Math.cos(angle + wingAngle),
+              preview.to.y - headLength * Math.sin(angle + wingAngle),
             );
-            ctx.stroke();
+            ctx.closePath();
+            ctx.fillStyle = preview.color;
+            ctx.fill();
             break;
           }
           case 'move': {
@@ -1565,14 +2131,14 @@ export class AnnotationsOverlay implements Overlay {
               geometriesMap.get(preview.annotationId) ??
               this.mergedGeometries.get(preview.annotationId);
             if (targetGeom !== undefined) {
-              const shiftedLeft = targetGeom.bbox.left + preview.deltaX;
-              const shiftedTop = targetGeom.bbox.top + preview.deltaY;
+              // The annotation itself moves live with cursor.
+              // Stroke selection accent outline around shifted bbox:
               ctx.lineWidth = 1;
               ctx.strokeStyle = theme.COLOR_ACCENT;
               ctx.setLineDash([4, 4]);
               ctx.strokeRect(
-                shiftedLeft,
-                shiftedTop,
+                targetGeom.bbox.left,
+                targetGeom.bbox.top,
                 targetGeom.bbox.width,
                 targetGeom.bbox.height,
               );
@@ -1599,6 +2165,13 @@ export class AnnotationsOverlay implements Overlay {
         this.mergedGeometries.set(id, geom);
       }
       for (const [id, info] of nextRenderedInfo.entries()) {
+        const existing = this.renderedAnnotationInfo.get(id);
+        if (existing?.status === 'exact' && info.status !== 'exact') {
+          const ann = this.store.get(id);
+          if (ann && this.annotationHasExistingTracks(ann)) {
+            continue;
+          }
+        }
         this.renderedAnnotationInfo.set(id, info);
       }
 

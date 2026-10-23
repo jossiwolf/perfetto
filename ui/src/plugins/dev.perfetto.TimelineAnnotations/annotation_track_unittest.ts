@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {describe, expect, test} from 'vitest';
+import {describe, expect, test, vi} from 'vitest';
+import type {Trace} from '../../public/trace';
 import {Time} from '../../base/time';
-import type {
-  ArrowAnnotation,
-  EllipseAnnotation,
-  LabelAnnotation,
-  PathAnnotation,
-  RectAnnotation,
+import {
+  type ArrowAnnotation,
+  type EllipseAnnotation,
+  type LabelAnnotation,
+  type PathAnnotation,
+  type RectAnnotation,
+  AnnotationStore,
 } from './model';
 import {
+  AnnotationTrack,
   annotationToRow,
   escapeSqlString,
   getAnnotationColorScheme,
@@ -306,6 +309,140 @@ describe('annotation_track', () => {
       expect(rowA.id).toBe('arrow_a');
       expect(rowA.ts).toBe(100n);
       expect(rowA.dur).toBe(400n);
+    });
+  });
+
+  describe('AnnotationTrack sync fingerprinting and onSliceClick', () => {
+    test('does not execute SQL DELETE/INSERT or bump version on store.select', async () => {
+      const sqlQueries: string[] = [];
+      const mockEngine = {
+        query: vi.fn(async (sql: string) => {
+          sqlQueries.push(sql.trim());
+          return {} as unknown as never;
+        }),
+      };
+      const mockWorkspace = {
+        addChildInOrder: vi.fn(),
+      };
+      const mockRaf = {
+        scheduleFullRedraw: vi.fn(),
+      };
+      const mockTracks = {
+        registerTrack: vi.fn(),
+      };
+      const mockTabs = {
+        showTab: vi.fn(),
+      };
+
+      const mockTrace = {
+        engine: mockEngine,
+        defaultWorkspace: mockWorkspace,
+        currentWorkspace: mockWorkspace,
+        raf: mockRaf,
+        tracks: mockTracks,
+        tabs: mockTabs,
+      } as unknown as Trace;
+
+      const store = new AnnotationStore();
+      const track = new AnnotationTrack(mockTrace, store);
+
+      await track.init();
+
+      // Initial init creates table and syncs initial empty rows
+      expect(mockEngine.query).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'CREATE TABLE IF NOT EXISTS __timeline_annotations',
+        ),
+      );
+      const initialQueryCount = mockEngine.query.mock.calls.length;
+      const initialRedrawCount = mockRaf.scheduleFullRedraw.mock.calls.length;
+
+      // Add one annotation -> fingerprint changes, should run SQL DELETE/INSERT and schedule redraw
+      store.add({
+        id: 'ann-1',
+        kind: 'rect',
+        color: 'red',
+        anchor: {
+          start: Time.fromRaw(100n),
+          end: Time.fromRaw(200n),
+          trackUris: ['cpu_0'],
+        },
+      });
+
+      // Wait a microtask tick for sync promise
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const afterAddQueryCount = mockEngine.query.mock.calls.length;
+      expect(afterAddQueryCount).toBeGreaterThan(initialQueryCount);
+      expect(mockRaf.scheduleFullRedraw.mock.calls.length).toBe(
+        initialRedrawCount + 1,
+      );
+
+      // Now call store.select('ann-1') -> fingerprint DOES NOT CHANGE!
+      store.select('ann-1');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // No new queries, no new redraw
+      expect(mockEngine.query.mock.calls.length).toBe(afterAddQueryCount);
+      expect(mockRaf.scheduleFullRedraw.mock.calls.length).toBe(
+        initialRedrawCount + 1,
+      );
+
+      // Deselect -> still no change in fingerprint
+      store.select(undefined);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(mockEngine.query.mock.calls.length).toBe(afterAddQueryCount);
+      expect(mockRaf.scheduleFullRedraw.mock.calls.length).toBe(
+        initialRedrawCount + 1,
+      );
+
+      track.dispose();
+    });
+
+    test('onSliceClick selects annotation and shows AnnotationsTab', () => {
+      const mockTabs = {showTab: vi.fn()};
+      const mockTrace = {
+        tabs: mockTabs,
+      } as unknown as Trace;
+      const store = new AnnotationStore();
+      const track = new AnnotationTrack(mockTrace, store);
+
+      store.add({
+        id: 'target-123',
+        kind: 'rect',
+        color: 'blue',
+        anchor: {
+          start: Time.fromRaw(10n),
+          end: Time.fromRaw(20n),
+          trackUris: ['t'],
+        },
+      });
+
+      const renderer = track.createRenderer() as unknown as {
+        attrs: {
+          onSliceClick: (arg: {
+            slice: {
+              row: {
+                annotation_id: string;
+              };
+            };
+          }) => void;
+        };
+      };
+      expect(renderer.attrs.onSliceClick).toBeDefined();
+
+      renderer.attrs.onSliceClick({
+        slice: {
+          row: {
+            annotation_id: 'target-123',
+          },
+        },
+      });
+
+      expect(store.selectedId).toBe('target-123');
+      expect(mockTabs.showTab).toHaveBeenCalledWith(
+        'dev.perfetto.TimelineAnnotations#AnnotationsTab',
+      );
     });
   });
 });

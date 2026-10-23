@@ -26,12 +26,11 @@ import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
 import {Popup, PopupPosition} from '../../widgets/popup';
 import {Switch} from '../../widgets/switch';
-import {TextInput} from '../../widgets/text_input';
-import {Chip} from '../../widgets/chip';
 import {Intent} from '../../widgets/common';
 import {
   type Annotation,
   type AnnotationStore,
+  type LabelAnnotation,
   type LabelFontFamily,
   normalizeColor,
 } from './model';
@@ -55,6 +54,29 @@ export const PALETTE_COLORS: ReadonlyArray<{
   {label: 'Purple', value: '#8e24aa'},
   {label: 'Grey', value: '#757575'},
 ];
+
+export const LABEL_FONT_OPTIONS: ReadonlyArray<{
+  readonly value: LabelFontFamily;
+  readonly label: string;
+}> = [
+  {value: 'Roboto', label: 'Roboto'},
+  {value: 'Google Sans', label: 'Google Sans'},
+  {value: 'Inter', label: 'Inter'},
+  {value: 'Roboto Condensed', label: 'Roboto Condensed'},
+  {value: 'Roboto Mono', label: 'Roboto Mono'},
+  {value: 'Georgia', label: 'Georgia'},
+];
+
+export const LABEL_FONT_SIZES: ReadonlyArray<number> = [
+  11, 12, 13, 14, 16, 18, 20, 24,
+];
+
+function normalizeFontFamily(family?: LabelFontFamily): LabelFontFamily {
+  if (!family || family === 'sans-serif') return 'Roboto';
+  if (family === 'monospace') return 'Roboto Mono';
+  if (family === 'serif') return 'Georgia';
+  return family;
+}
 
 const ANNOTATION_KINDS: ReadonlyArray<{
   readonly kind: Annotation['kind'];
@@ -181,14 +203,21 @@ export class ColorSwatches implements m.ClassComponent<ColorSwatchesAttrs> {
             className: allowMatchStroke.active
               ? 'pf-timeline-annotations__swatch--active'
               : '',
-            style: {borderColor: allowMatchStroke.strokeColor},
+            style: {
+              borderColor: allowMatchStroke.strokeColor,
+              backgroundColor: colorWithAlpha(
+                allowMatchStroke.strokeColor,
+                0.2,
+              ),
+              color: allowMatchStroke.strokeColor,
+            },
             title: allowMatchStroke.title ?? 'Match stroke color',
             onclick: (event: MouseEvent) => {
               event.stopPropagation();
               allowMatchStroke.onSelect();
             },
           },
-          m(Icon, {icon: 'hdr_auto'}),
+          m(Icon, {icon: 'sync'}),
         ),
       );
     }
@@ -376,15 +405,21 @@ function getJumpTarget(
   }
 }
 
+const POPUP_EXIT_ANIM_MS = 85;
+
 export class AnnotationsTab implements Tab {
   private readonly trace: Trace;
   private readonly store: AnnotationStore;
   private readonly tools: ToolController;
   private readonly overlay: AnnotationsOverlay;
-  private pendingClearConfirm = false;
+  private showClearConfirm = false;
+  private closingClearConfirm = false;
   private fallbackFillColor: string | undefined = undefined;
   private fallbackFillOpacity: number = 0.2;
   private readonly knownAnnotationIds = new Set<string>();
+  private readonly knownItemIds = new Set<string>();
+  private readonly enteringItemIds = new Set<string>();
+  private isInitialMount = true;
   private readonly deletingIds = new Set<string>();
   private openPopupKey: string | undefined = undefined;
   private closingPopupKey: string | undefined = undefined;
@@ -406,6 +441,33 @@ export class AnnotationsTab implements Tab {
     return 'Annotations';
   }
 
+  get pendingClearConfirm(): boolean {
+    return this.showClearConfirm;
+  }
+
+  set pendingClearConfirm(val: boolean) {
+    if (val) {
+      this.showClearConfirm = true;
+      this.closingClearConfirm = false;
+    } else {
+      this.closeClearConfirmModal();
+    }
+  }
+
+  private closeClearConfirmModal(onComplete?: () => void): void {
+    if (!this.showClearConfirm || this.closingClearConfirm) {
+      return;
+    }
+    this.closingClearConfirm = true;
+    m.redraw();
+    setTimeout(() => {
+      this.showClearConfirm = false;
+      this.closingClearConfirm = false;
+      onComplete?.();
+      m.redraw();
+    }, 130);
+  }
+
   private closePopupWithAnimation(key: string): void {
     if (this.openPopupKey === key) {
       this.openPopupKey = undefined;
@@ -420,7 +482,7 @@ export class AnnotationsTab implements Tab {
           this.closeTimer = undefined;
           m.redraw();
         }
-      }, 130);
+      }, POPUP_EXIT_ANIM_MS);
     }
   }
 
@@ -484,12 +546,21 @@ export class AnnotationsTab implements Tab {
       },
     };
 
+    const fullClassName = [
+      className,
+      isClosing
+        ? `${className}--closing pf-timeline-annotations-popup--closing`
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
     return m(
       Popup,
       {
         fitContent: true,
         position,
-        className,
+        className: fullClassName,
         isOpen,
         onChange: (shouldOpen: boolean) => {
           if (!shouldOpen) {
@@ -498,15 +569,7 @@ export class AnnotationsTab implements Tab {
         },
         trigger: triggerWithClick,
       },
-      m(
-        '.pf-timeline-annotations-popup-anim',
-        {
-          className: isClosing
-            ? 'pf-timeline-annotations-popup-anim--closing'
-            : '',
-        },
-        content,
-      ),
+      content,
     );
   }
 
@@ -561,31 +624,53 @@ export class AnnotationsTab implements Tab {
       this.knownAnnotationIds.add(ann.id);
     }
 
-    const children: m.Children = [this.renderToolbar(annotations.length)];
-    if (this.pendingClearConfirm) {
-      children.push(this.renderClearConfirmModal(annotations.length));
-    }
-    if (annotations.length === 0) {
-      children.push(
-        m(
-          EmptyState,
-          {
-            icon: 'draw',
-            title: 'No annotations yet',
-            fillHeight: true,
-          },
-          'Turn on drawing mode or select an area on the timeline to create annotations.',
-        ),
-      );
+    if (this.isInitialMount) {
+      for (const ann of annotations) {
+        this.knownItemIds.add(ann.id);
+      }
+      this.isInitialMount = false;
     } else {
-      children.push(
-        m(
-          '.pf-timeline-annotations-list',
-          annotations.map((annotation) =>
-            this.renderAnnotationItem(annotation),
+      for (const ann of annotations) {
+        if (!this.knownItemIds.has(ann.id)) {
+          this.knownItemIds.add(ann.id);
+          this.enteringItemIds.add(ann.id);
+          setTimeout(() => {
+            this.enteringItemIds.delete(ann.id);
+            m.redraw();
+          }, 180);
+        }
+      }
+      const currentIds = new Set(annotations.map((ann) => ann.id));
+      for (const id of this.knownItemIds) {
+        if (!currentIds.has(id)) {
+          this.knownItemIds.delete(id);
+          this.enteringItemIds.delete(id);
+        }
+      }
+    }
+
+    const children: m.Children = [
+      this.renderToolbar(annotations.length),
+      annotations.length === 0
+        ? m(
+            EmptyState,
+            {
+              icon: 'draw',
+              title: 'No annotations yet',
+              fillHeight: true,
+            },
+            'Turn on drawing mode or select an area on the timeline to create annotations.',
+          )
+        : m(
+            '.pf-timeline-annotations-list',
+            annotations.map((annotation) =>
+              this.renderAnnotationItem(annotation),
+            ),
           ),
-        ),
-      );
+    ];
+
+    if (this.showClearConfirm || this.closingClearConfirm) {
+      children.push(this.renderClearConfirmModal(annotations.length));
     }
 
     return m('.pf-timeline-annotations-tab', children);
@@ -638,7 +723,8 @@ export class AnnotationsTab implements Tab {
               'variant': ButtonVariant.Filled,
               'compact': true,
               'title': `${label} tool`,
-              'className': 'pf-timeline-annotations__tool-button',
+              'className':
+                'pf-timeline-annotations__tool-button pf-timeline-annotations__tool-btn',
               'data-tool': toolKind,
               'onclick': () => {
                 if (
@@ -691,7 +777,9 @@ export class AnnotationsTab implements Tab {
           title: 'Remove all annotations',
           disabled: count === 0,
           onclick: () => {
-            this.pendingClearConfirm = true;
+            this.showClearConfirm = true;
+            this.closingClearConfirm = false;
+            m.redraw();
           },
         }),
         m('.pf-timeline-annotations__divider'),
@@ -749,7 +837,10 @@ export class AnnotationsTab implements Tab {
       '.pf-timeline-annotations-style-panel',
       m(
         '.pf-timeline-annotations-style-section',
-        m('span.pf-timeline-annotations__label', 'Stroke color'),
+        m(
+          'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+          'Default stroke',
+        ),
         m(ColorSwatches, {
           value: currentColor,
           onChange: (color: string) => {
@@ -759,7 +850,10 @@ export class AnnotationsTab implements Tab {
       ),
       m(
         '.pf-timeline-annotations-style-section',
-        m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
+        m(
+          'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+          'Default fill',
+        ),
         m(ColorSwatches, {
           value: currentFill ?? currentColor,
           allowMatchStroke: {
@@ -779,7 +873,7 @@ export class AnnotationsTab implements Tab {
         }),
         m(
           '.pf-timeline-annotations-slider-row',
-          m('span', 'Opacity:'),
+          m('span', 'Fill opacity'),
           m('input[type=range]', {
             min: 0.05,
             max: 0.8,
@@ -808,7 +902,7 @@ export class AnnotationsTab implements Tab {
     );
   }
 
-  private renderAnnotationStylePopup(annotation: Annotation): m.Children {
+  private renderItemColorDropdown(annotation: Annotation): m.Children {
     const currentColor = annotation.color;
     const currentFill = annotation.fillColor;
     const currentOpacity = annotation.fillOpacity ?? 0.2;
@@ -820,115 +914,19 @@ export class AnnotationsTab implements Tab {
             Math.max(0.35, currentOpacity),
           );
 
-    const sections: m.Children = [
-      m(
-        '.pf-timeline-annotations-style-section',
-        m('span.pf-timeline-annotations__label', 'Stroke color'),
-        m(ColorSwatches, {
-          value: currentColor,
-          onChange: (color: string) => {
-            this.store.update(annotation.id, {color});
-          },
-        }),
-      ),
-      m(
-        '.pf-timeline-annotations-style-section',
-        m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
-        m(ColorSwatches, {
-          value: currentFill ?? currentColor,
-          allowMatchStroke: {
-            active: currentFill === undefined,
-            strokeColor: currentColor,
-            title: 'Match stroke color',
-            onSelect: () => {
-              this.store.update(annotation.id, {fillColor: undefined});
-            },
-          },
-          allowTransparent: {
-            active: currentFill === 'transparent',
-            title: 'No fill (transparent)',
-            onSelect: () => {
-              this.store.update(annotation.id, {fillColor: 'transparent'});
-            },
-          },
-          onChange: (color: string) => {
-            this.store.update(annotation.id, {fillColor: color});
-          },
-        }),
-        m(
-          '.pf-timeline-annotations-slider-row',
-          m('span', 'Opacity:'),
-          m('input[type=range]', {
-            min: 0.05,
-            max: 0.8,
-            step: 0.05,
-            value: currentOpacity,
-            oninput: (event: Event) => {
-              const target = event.target as HTMLInputElement;
-              const val = parseFloat(target.value);
-              this.store.update(annotation.id, {fillOpacity: val});
-            },
-          }),
-          m(
-            'span.pf-timeline-annotations-slider-val',
-            `${Math.round(currentOpacity * 100)}%`,
-          ),
-        ),
-      ),
-    ];
+    const sections: m.Children = [];
 
     if (annotation.kind === 'label') {
-      const currentFamily = annotation.fontFamily ?? 'sans-serif';
-      const currentSize = annotation.fontSize ?? 12;
       const currentTextColor = annotation.textColor ?? annotation.color;
       const currentBg = annotation.backgroundColor;
 
       sections.push(
         m(
           '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Font family'),
           m(
-            ButtonGroup,
-            (['sans-serif', 'monospace', 'serif'] as const).map(
-              (family: LabelFontFamily) => {
-                const label =
-                  family === 'sans-serif'
-                    ? 'Sans'
-                    : family === 'monospace'
-                      ? 'Mono'
-                      : 'Serif';
-                return m(Button, {
-                  compact: true,
-                  label,
-                  active: currentFamily === family,
-                  onclick: () => {
-                    this.store.update(annotation.id, {fontFamily: family});
-                  },
-                });
-              },
-            ),
+            'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+            'Text color',
           ),
-        ),
-        m(
-          '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Font size'),
-          m(
-            ButtonGroup,
-            [11, 12, 14, 16, 20, 24].map((size) =>
-              m(Button, {
-                compact: true,
-                label: `${size}`,
-                active: currentSize === size,
-                onclick: () => {
-                  this.store.update(annotation.id, {fontSize: size});
-                },
-              }),
-            ),
-          ),
-        ),
-        m(
-          '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Text color'),
           m(ColorSwatches, {
             value: currentTextColor,
             allowMatchStroke: {
@@ -946,7 +944,10 @@ export class AnnotationsTab implements Tab {
         ),
         m(
           '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Background'),
+          m(
+            'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+            'Background',
+          ),
           m(ColorSwatches, {
             value:
               currentBg && currentBg !== 'transparent'
@@ -975,6 +976,69 @@ export class AnnotationsTab implements Tab {
           }),
         ),
       );
+    } else {
+      sections.push(
+        m(
+          '.pf-timeline-annotations-style-section',
+          m(
+            'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+            'Stroke',
+          ),
+          m(ColorSwatches, {
+            value: currentColor,
+            onChange: (color: string) => {
+              this.store.update(annotation.id, {color});
+            },
+          }),
+        ),
+        m(
+          '.pf-timeline-annotations-style-section',
+          m(
+            'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+            'Fill',
+          ),
+          m(ColorSwatches, {
+            value: currentFill ?? currentColor,
+            allowMatchStroke: {
+              active: currentFill === undefined,
+              strokeColor: currentColor,
+              title: 'Match stroke color',
+              onSelect: () => {
+                this.store.update(annotation.id, {fillColor: undefined});
+              },
+            },
+            allowTransparent: {
+              active: currentFill === 'transparent',
+              title: 'No fill (transparent)',
+              onSelect: () => {
+                this.store.update(annotation.id, {fillColor: 'transparent'});
+              },
+            },
+            onChange: (color: string) => {
+              this.store.update(annotation.id, {fillColor: color});
+            },
+          }),
+          m(
+            '.pf-timeline-annotations-slider-row',
+            m('span', 'Fill opacity'),
+            m('input[type=range]', {
+              min: 0.05,
+              max: 0.8,
+              step: 0.05,
+              value: currentOpacity,
+              oninput: (event: Event) => {
+                const target = event.target as HTMLInputElement;
+                const val = parseFloat(target.value);
+                this.store.update(annotation.id, {fillOpacity: val});
+              },
+            }),
+            m(
+              'span.pf-timeline-annotations-slider-val',
+              `${Math.round(currentOpacity * 100)}%`,
+            ),
+          ),
+        ),
+      );
     }
 
     if (annotation.kind === 'arrow') {
@@ -983,7 +1047,10 @@ export class AnnotationsTab implements Tab {
       sections.push(
         m(
           '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Arrow curve'),
+          m(
+            'span.pf-timeline-annotations-popup-section__title.pf-timeline-annotations__label',
+            'Arrow curve',
+          ),
           m(
             ButtonGroup,
             m(Button, {
@@ -1049,6 +1116,18 @@ export class AnnotationsTab implements Tab {
       );
     }
 
+    const previewColor =
+      annotation.kind === 'label'
+        ? (annotation.textColor ?? annotation.color)
+        : currentColor;
+    const previewFill =
+      annotation.kind === 'label'
+        ? annotation.backgroundColor === 'transparent'
+          ? 'transparent'
+          : (annotation.backgroundColor ??
+            colorWithAlpha(annotation.color, 0.2))
+        : fillCss;
+
     const trigger = m(
       'button.pf-timeline-annotations__color-trigger',
       {
@@ -1057,8 +1136,8 @@ export class AnnotationsTab implements Tab {
       },
       m('.pf-timeline-annotations__color-preview', {
         style: {
-          borderColor: currentColor,
-          backgroundColor: fillCss,
+          borderColor: previewColor,
+          backgroundColor: previewFill,
         },
       }),
       m(Icon, {icon: 'arrow_drop_down'}),
@@ -1076,16 +1155,36 @@ export class AnnotationsTab implements Tab {
   }
 
   private renderClearConfirmModal(count: number): m.Children {
+    const isClosing = this.closingClearConfirm;
+    const overlayClass = [
+      'pf-timeline-annotations-clear-overlay',
+      isClosing
+        ? 'pf-timeline-annotations-clear-overlay--closing pf-timeline-annotations-modal-backdrop--closing'
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const dialogClass = [
+      'pf-timeline-annotations-clear-dialog',
+      isClosing
+        ? 'pf-timeline-annotations-clear-dialog--closing pf-timeline-annotations-modal--closing'
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+
     return m(
-      '.pf-timeline-annotations-clear-overlay',
+      'div',
       {
+        className: overlayClass,
         onclick: () => {
-          this.pendingClearConfirm = false;
+          this.closeClearConfirmModal();
         },
       },
       m(
-        '.pf-timeline-annotations-clear-dialog',
+        'div',
         {
+          className: dialogClass,
           onclick: (event: MouseEvent) => {
             event.stopPropagation();
           },
@@ -1108,7 +1207,7 @@ export class AnnotationsTab implements Tab {
           m(Button, {
             label: 'Cancel',
             onclick: () => {
-              this.pendingClearConfirm = false;
+              this.closeClearConfirmModal();
             },
           }),
           m(Button, {
@@ -1116,9 +1215,10 @@ export class AnnotationsTab implements Tab {
             variant: ButtonVariant.Filled,
             label: 'Confirm clear',
             onclick: () => {
-              this.closeAllPopups();
-              this.store.replaceAll([]);
-              this.pendingClearConfirm = false;
+              this.closeClearConfirmModal(() => {
+                this.closeAllPopups();
+                this.store.replaceAll([]);
+              });
             },
           }),
         ),
@@ -1140,13 +1240,12 @@ export class AnnotationsTab implements Tab {
     const shouldFocus =
       typeof toolsWithAutoFocus.consumeAutoFocusId === 'function'
         ? toolsWithAutoFocus.consumeAutoFocusId(annotation.id)
-        : !this.knownAnnotationIds.has(annotation.id) &&
-          this.tools.tool === 'label';
+        : !this.knownAnnotationIds.has(annotation.id);
 
     if (shouldFocus) {
       requestAnimationFrame(() => {
         const input = dom.querySelector(
-          '.pf-timeline-annotations-title-input input, input.pf-timeline-annotations-title-input',
+          '.pf-timeline-annotations-title-input input, input.pf-timeline-annotations-title-input, input.pf-timeline-annotations-title',
         ) as HTMLInputElement | null;
         if (input) {
           input.focus();
@@ -1156,11 +1255,7 @@ export class AnnotationsTab implements Tab {
     }
   }
 
-  private renderAnnotationItem(annotation: Annotation): m.Children {
-    const isSelected = this.store.selectedId === annotation.id;
-    const isHidden = this.store.isHidden(annotation.id);
-    const isDeleting = this.deletingIds.has(annotation.id);
-    const renderInfo = this.overlay.lastRender.get(annotation.id);
+  private renderItemKindDropdown(annotation: Annotation): m.Children {
     const kindLabel =
       annotation.kind.charAt(0).toUpperCase() + annotation.kind.slice(1);
 
@@ -1196,66 +1291,97 @@ export class AnnotationsTab implements Tab {
       ),
     );
 
+    return this.renderAnimatedPopup(
+      `kind-${annotation.id}`,
+      kindTrigger,
+      PopupPosition.BottomStart,
+      'pf-timeline-annotations__kind-popup',
+      kindMenu,
+    );
+  }
+
+  private renderLabelToolbar(annotation: LabelAnnotation): m.Children {
+    const currentFamily = normalizeFontFamily(annotation.fontFamily);
+    const currentSize = annotation.fontSize ?? 12;
+
     return m(
-      '.pf-timeline-annotations-item',
-      {
-        key: annotation.id,
-        className: [
-          isSelected ? 'pf-timeline-annotations-item--selected' : '',
-          isHidden ? 'pf-timeline-annotations-item--hidden' : '',
-          isDeleting ? 'pf-timeline-annotations-item--deleting' : '',
-        ]
-          .filter(Boolean)
-          .join(' '),
-        onclick: () => {
-          this.store.select(annotation.id);
+      '.pf-timeline-annotations-label-toolbar',
+      m(
+        'select.pf-timeline-annotations-select.pf-timeline-annotations-font-select',
+        {
+          value: currentFamily,
+          title: 'Font family',
+          onchange: (event: Event) => {
+            const target = event.target as HTMLSelectElement;
+            this.store.update(annotation.id, {
+              kind: 'label',
+              fontFamily: target.value as LabelFontFamily,
+            });
+          },
         },
-        oncreate: (vnode: m.VnodeDOM) => {
-          this.maybeAutoFocusLabel(
-            vnode.dom as HTMLElement,
-            annotation,
-            isSelected,
-          );
-        },
-        onupdate: (vnode: m.VnodeDOM) => {
-          this.maybeAutoFocusLabel(
-            vnode.dom as HTMLElement,
-            annotation,
-            isSelected,
-          );
-        },
-      },
-      this.renderAnimatedPopup(
-        `kind-${annotation.id}`,
-        kindTrigger,
-        PopupPosition.BottomStart,
-        'pf-timeline-annotations__kind-popup',
-        kindMenu,
+        LABEL_FONT_OPTIONS.map((opt) =>
+          m('option', {value: opt.value}, opt.label),
+        ),
       ),
-      m(TextInput, {
-        className: 'pf-timeline-annotations-title-input',
-        placeholder: annotation.kind,
-        value:
-          annotation.title ??
-          (annotation.kind === 'label' ? annotation.text : ''),
-        onInput: (value: string) => {
-          if (annotation.kind === 'label') {
-            this.store.update(annotation.id, {title: value, text: value});
-          } else {
-            this.store.update(annotation.id, {title: value});
-          }
+      m(
+        'select.pf-timeline-annotations-select.pf-timeline-annotations-size-select',
+        {
+          value: currentSize,
+          title: 'Font size',
+          onchange: (event: Event) => {
+            const target = event.target as HTMLSelectElement;
+            this.store.update(annotation.id, {
+              kind: 'label',
+              fontSize: Number(target.value),
+            });
+          },
         },
-      }),
-      m(TextInput, {
-        className: 'pf-timeline-annotations-desc-input',
-        placeholder: 'Description',
-        value: annotation.description ?? '',
-        onInput: (value: string) => {
-          this.store.update(annotation.id, {description: value});
+        LABEL_FONT_SIZES.map((size) => m('option', {value: size}, `${size}px`)),
+      ),
+      this.renderItemColorDropdown(annotation),
+    );
+  }
+
+  private renderAnnotationItem(annotation: Annotation): m.Children {
+    const isSelected = this.store.selectedId === annotation.id;
+    const isHidden = this.store.isHidden(annotation.id);
+    const isDeleting = this.deletingIds.has(annotation.id);
+    const isEntering = this.enteringItemIds.has(annotation.id);
+    const renderInfo = this.overlay.lastRender.get(annotation.id);
+
+    const headerChildren: m.Children = [
+      this.renderItemKindDropdown(annotation),
+      m(
+        'input.pf-timeline-annotations-input.pf-timeline-annotations-title.pf-timeline-annotations-title-input',
+        {
+          type: 'text',
+          placeholder: annotation.kind,
+          value:
+            annotation.title ??
+            (annotation.kind === 'label' ? annotation.text : ''),
+          oninput: (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            const val = target.value;
+            if (annotation.kind === 'label') {
+              this.store.update(annotation.id, {title: val, text: val});
+            } else {
+              this.store.update(annotation.id, {title: val});
+            }
+          },
         },
-      }),
-      this.renderAnnotationStylePopup(annotation),
-      this.renderBadge(renderInfo),
+      ),
+    ];
+
+    const badge = this.renderBadge(renderInfo);
+    if (badge !== undefined && badge !== null && badge !== false) {
+      headerChildren.push(badge);
+    }
+
+    if (annotation.kind !== 'label') {
+      headerChildren.push(this.renderItemColorDropdown(annotation));
+    }
+
+    headerChildren.push(
       m(
         '.pf-timeline-annotations-actions',
         m(Button, {
@@ -1288,6 +1414,59 @@ export class AnnotationsTab implements Tab {
         }),
       ),
     );
+
+    const bodyChildren: m.Children = [
+      m(
+        'input.pf-timeline-annotations-input.pf-timeline-annotations-description.pf-timeline-annotations-desc-input',
+        {
+          type: 'text',
+          placeholder: 'Description',
+          value: annotation.description ?? '',
+          oninput: (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            this.store.update(annotation.id, {description: target.value});
+          },
+        },
+      ),
+    ];
+
+    if (annotation.kind === 'label') {
+      bodyChildren.push(this.renderLabelToolbar(annotation));
+    }
+
+    return m(
+      '.pf-timeline-annotations-item',
+      {
+        key: annotation.id,
+        className: [
+          isSelected ? 'pf-timeline-annotations-item--selected' : '',
+          isHidden ? 'pf-timeline-annotations-item--hidden' : '',
+          isDeleting ? 'pf-timeline-annotations-item--deleting' : '',
+          isEntering ? 'pf-timeline-annotations-item--entering' : '',
+        ]
+          .filter(Boolean)
+          .join(' '),
+        onclick: () => {
+          this.store.select(annotation.id);
+        },
+        oncreate: (vnode: m.VnodeDOM) => {
+          this.maybeAutoFocusLabel(
+            vnode.dom as HTMLElement,
+            annotation,
+            isSelected,
+          );
+        },
+        onupdate: (vnode: m.VnodeDOM) => {
+          this.maybeAutoFocusLabel(
+            vnode.dom as HTMLElement,
+            annotation,
+            isSelected,
+          );
+        },
+      },
+      m('.pf-timeline-annotations-item__header', headerChildren),
+      m('.pf-timeline-annotations-item__body', bodyChildren),
+    );
   }
 
   private renderBadge(renderInfo?: {
@@ -1299,25 +1478,21 @@ export class AnnotationsTab implements Tab {
     }
 
     if (renderInfo.status === 'degraded') {
-      return m(Chip, {
-        className: 'pf-timeline-annotations-badge',
-        intent: Intent.Warning,
-        compact: true,
-        label: 'degraded',
-        title: 'Resolved via ancestor track or fuzzy name match',
-      });
+      return m(
+        'span.pf-timeline-annotations-badge.pf-timeline-annotations-badge--degraded',
+        {title: 'Track matched by name fallback'},
+        'fuzzy',
+      );
     }
 
     if (renderInfo.status === 'unanchored') {
       const missingCount = renderInfo.missing.length;
       const title = `Missing tracks:\n${renderInfo.missing.join('\n')}`;
-      return m(Chip, {
-        className: 'pf-timeline-annotations-badge',
-        intent: Intent.Danger,
-        compact: true,
-        label: `unanchored: ${missingCount} missing`,
-        title,
-      });
+      return m(
+        'span.pf-timeline-annotations-badge.pf-timeline-annotations-badge--unanchored',
+        {title},
+        `unanchored (${missingCount})`,
+      );
     }
 
     return null;

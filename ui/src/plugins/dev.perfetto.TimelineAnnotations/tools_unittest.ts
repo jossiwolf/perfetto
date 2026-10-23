@@ -799,4 +799,304 @@ describe('TimelineAnnotations: tools.ts', () => {
     });
     expect(controller.consumeCreatedRect(createdId)).toBeUndefined();
   });
+
+  test('switches active tool to select after creating rect, ellipse, pen, arrow, label', () => {
+    const {controller} = setupController();
+
+    // 1. Rect
+    controller.activateTool('rect');
+    expect(controller.tool).toBe('rect');
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 180, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 180, buttons: 0}),
+    );
+    expect(controller.tool).toBe('select');
+
+    // 2. Ellipse
+    controller.setTool('ellipse');
+    expect(controller.tool).toBe('ellipse');
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 180, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 180, buttons: 0}),
+    );
+    expect(controller.tool).toBe('select');
+
+    // 3. Arrow
+    controller.setTool('arrow');
+    expect(controller.tool).toBe('arrow');
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 250, posY: 150, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 250, posY: 150, buttons: 0}),
+    );
+    expect(controller.tool).toBe('select');
+
+    // 4. Label
+    controller.setTool('label');
+    expect(controller.tool).toBe('label');
+    controller.onPointerDown(
+      createPointerEvent({posX: 150, posY: 150, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 150, posY: 150, buttons: 0}),
+    );
+    expect(controller.tool).toBe('select');
+
+    // 5. Drag under 3px does not switch tool
+    controller.setTool('rect');
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 101, posY: 121, buttons: 0}),
+    );
+    expect(controller.tool).toBe('rect');
+  });
+
+  test('moves rect, label, and arrow annotations in select mode with exact drop position', () => {
+    const {store, controller} = setupController();
+    controller.setDrawingMode(true);
+
+    // Test rect with topYFrac / bottomYFrac
+    const rect = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const geometries = new Map<string, AnnotationGeometry>();
+    geometries.set(rect.id, {
+      id: rect.id,
+      kind: 'rect',
+      bbox: {
+        left: 100,
+        top: 100,
+        right: 200,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      },
+    });
+    controller.setGeometryProvider((id?: string) =>
+      id ? geometries.get(id) : geometries,
+    );
+
+    controller.setTool('select');
+    controller.onPointerDown(
+      createPointerEvent({posX: 150, posY: 150, buttons: 1}),
+    );
+    // Shift by dx=+50, dy=+30 -> top=130, bottom=230 (intersects track1: [100, 200] and track2: [200, 300])
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 180, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 180, buttons: 0}),
+    );
+
+    const updatedRect = store.get(rect.id);
+    expect(updatedRect?.kind).toBe('rect');
+    if (updatedRect?.kind === 'rect') {
+      expect(updatedRect.anchor.trackUris).toEqual(['track_1', 'track_2']);
+      expect(updatedRect.anchor.topYFrac).toBeCloseTo(0.3, 1);
+      expect(updatedRect.anchor.bottomYFrac).toBeCloseTo(0.3, 1);
+    }
+
+    // Test label vertical center alignment
+    const label = store.add({
+      kind: 'label',
+      color: '#00ff00',
+      text: 'Test Label',
+      position: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+    });
+    geometries.set(label.id, {
+      id: label.id,
+      kind: 'label',
+      bbox: {
+        left: 100,
+        top: 120,
+        right: 180,
+        bottom: 140,
+        width: 80,
+        height: 20, // vertical center is 130
+      },
+    });
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 140, posY: 130, buttons: 1}),
+    );
+    // Shift by dx=+40, dy=+40 -> targetX=140, targetY=130+40=170
+    // track_1 is [100, 200], so 170 corresponds to yFrac = (170-100)/100 = 0.70
+    controller.onPointerMove(
+      createPointerEvent({posX: 180, posY: 170, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 180, posY: 170, buttons: 0}),
+    );
+
+    const updatedLabel = store.get(label.id);
+    expect(updatedLabel?.kind).toBe('label');
+    if (updatedLabel?.kind === 'label') {
+      expect(updatedLabel.position.yFrac).toBeCloseTo(0.7, 1);
+    }
+
+    // Test arrow moving both endpoints
+    const arrow = store.add({
+      kind: 'arrow',
+      color: '#0000ff',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(200n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+    geometries.set(arrow.id, {
+      id: arrow.id,
+      kind: 'arrow',
+      bbox: {
+        left: 100,
+        top: 150,
+        right: 200,
+        bottom: 150,
+        width: 100,
+        height: 0,
+      },
+      start: {x: 100, y: 150},
+      end: {x: 200, y: 150},
+    });
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 125, posY: 150, buttons: 1}),
+    );
+    // Shift by dx=+50, dy=+80 -> start lands at y=230, end lands at y=230 (track_2 is [200, 300])
+    controller.onPointerMove(
+      createPointerEvent({posX: 175, posY: 230, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 175, posY: 230, buttons: 0}),
+    );
+
+    const updatedArrow = store.get(arrow.id);
+    expect(updatedArrow?.kind).toBe('arrow');
+    if (updatedArrow?.kind === 'arrow') {
+      if (updatedArrow.from.kind === 'point') {
+        expect(updatedArrow.from.point.trackUri).toBe('track_2');
+        expect(updatedArrow.from.point.yFrac).toBeCloseTo(0.3, 1);
+      }
+      if (updatedArrow.to.kind === 'point') {
+        expect(updatedArrow.to.point.trackUri).toBe('track_2');
+        expect(updatedArrow.to.point.yFrac).toBeCloseTo(0.3, 1);
+      }
+    }
+  });
+
+  test('dragging arrow-control-1 and arrow-control-2 handles updates controlOffsets', () => {
+    const {store, controller} = setupController();
+
+    const arrow = store.add({
+      kind: 'arrow',
+      color: '#00897b',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const cp1 = {x: 167, y: 150};
+    const cp2 = {x: 233, y: 150};
+    const geometries = new Map<string, AnnotationGeometry>();
+    geometries.set(arrow.id, {
+      id: arrow.id,
+      kind: 'arrow',
+      bbox: {
+        left: 100,
+        top: 150,
+        right: 300,
+        bottom: 150,
+        width: 200,
+        height: 0,
+      },
+      start: {x: 100, y: 150},
+      end: {x: 300, y: 150},
+      controlPoints: [cp1, cp2],
+      curveMidpoint: {x: 200, y: 150},
+    });
+    controller.setGeometryProvider((id?: string) =>
+      id ? geometries.get(id) : geometries,
+    );
+
+    controller.setDrawingMode(false);
+    controller.setTool('select');
+
+    // Drag cp1 at (167, 150) downwards by 40px to (167, 190)
+    controller.onPointerDown(
+      createPointerEvent({posX: 167, posY: 150, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 167, posY: 190, buttons: 1}),
+    );
+    expect(controller.preview?.kind).toBe('arrow-curve');
+
+    controller.onPointerUp(
+      createPointerEvent({posX: 167, posY: 190, buttons: 0}),
+    );
+
+    const curvedArrow = store.get(arrow.id);
+    expect(curvedArrow?.kind).toBe('arrow');
+    if (curvedArrow?.kind === 'arrow') {
+      const controlOffsets = curvedArrow.controlOffsets;
+      expect(controlOffsets).toBeDefined();
+      expect(controlOffsets).toHaveLength(2);
+      expect(controlOffsets?.[0].normalPx).toBeCloseTo(40, 0);
+    }
+
+    // Update geometry with the new cp1 for second drag
+    geometries.set(arrow.id, {
+      ...geometries.get(arrow.id)!,
+      controlPoints: [{x: 167, y: 190}, cp2],
+    });
+
+    // Drag cp2 at (233, 150) upwards by 30px to (233, 120)
+    controller.onPointerDown(
+      createPointerEvent({posX: 233, posY: 150, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 233, posY: 120, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 233, posY: 120, buttons: 0}),
+    );
+
+    const curvedArrow2 = store.get(arrow.id);
+    expect(curvedArrow2?.kind).toBe('arrow');
+    if (curvedArrow2?.kind === 'arrow') {
+      const controlOffsets2 = curvedArrow2.controlOffsets;
+      expect(controlOffsets2).toBeDefined();
+      expect(controlOffsets2?.[1].normalPx).toBeCloseTo(-30, 0);
+    }
+  });
 });

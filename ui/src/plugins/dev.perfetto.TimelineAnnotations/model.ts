@@ -32,6 +32,8 @@ export interface AreaAnchor {
   readonly end: time;
   readonly trackUris: ReadonlyArray<string>;
   readonly trackNames?: ReadonlyArray<string>;
+  readonly topYFrac?: number;
+  readonly bottomYFrac?: number;
 }
 
 export interface AnchoredPoint {
@@ -88,6 +90,7 @@ export interface ArrowAnnotation extends BaseAnnotation {
   readonly to: ArrowEndpoint;
   readonly curvature?: number;
   readonly controlOffset?: ArrowControlOffset;
+  readonly controlOffsets?: readonly [ArrowControlOffset, ArrowControlOffset];
 }
 
 export type Annotation =
@@ -109,6 +112,108 @@ export type NewAnnotationInput =
   | (Omit<ArrowAnnotation, 'id' | 'createdAt' | 'updatedAt'> &
       Partial<Pick<BaseAnnotation, 'id' | 'createdAt' | 'updatedAt'>>);
 
+export function clampArrowControlOffset(
+  offset:
+    | ArrowControlOffset
+    | {
+        readonly dxFrac?: number;
+        readonly dyPx?: number;
+        readonly alongFrac?: number;
+        readonly normalPx?: number;
+      },
+): ArrowControlOffset {
+  const o = offset as {
+    readonly alongFrac?: number;
+    readonly normalPx?: number;
+    readonly dxFrac?: number;
+    readonly dyPx?: number;
+  };
+  const along = o.alongFrac ?? o.dxFrac ?? 0.5;
+  const normal = o.normalPx ?? o.dyPx ?? 0;
+  return {
+    alongFrac: Math.max(0, Math.min(1, along)),
+    normalPx: Math.max(-1000, Math.min(1000, normal)),
+  };
+}
+
+export interface CreateArrowInput extends Omit<
+  ArrowAnnotation,
+  'id' | 'createdAt' | 'updatedAt'
+> {
+  readonly id?: string;
+  readonly createdAt?: number;
+  readonly updatedAt?: number;
+  readonly controlOffsets?: readonly [ArrowControlOffset, ArrowControlOffset];
+}
+
+export interface UpdateArrowInput extends Partial<
+  Omit<
+    ArrowAnnotation,
+    'kind' | 'id' | 'createdAt' | 'controlOffset' | 'controlOffsets'
+  >
+> {
+  readonly controlOffset?: ArrowControlOffset | null;
+  readonly controlOffsets?:
+    readonly [ArrowControlOffset, ArrowControlOffset] | null;
+}
+
+export function createAnnotation(input: NewAnnotationInput): Annotation {
+  const currentTime = Date.now();
+  const id = input.id && input.id.length > 0 ? input.id : defaultIdGen();
+  const createdAt = input.createdAt ?? currentTime;
+  const updatedAt = input.updatedAt ?? currentTime;
+
+  if (input.kind === 'arrow' && input.controlOffsets !== undefined) {
+    const clampedOffsets: readonly [ArrowControlOffset, ArrowControlOffset] = [
+      clampArrowControlOffset(input.controlOffsets[0]),
+      clampArrowControlOffset(input.controlOffsets[1]),
+    ];
+    return {
+      ...input,
+      id,
+      createdAt,
+      updatedAt,
+      color: normalizeColor(input.color),
+      controlOffsets: clampedOffsets,
+    } as Annotation;
+  }
+
+  return {
+    ...input,
+    id,
+    createdAt,
+    updatedAt,
+    color: normalizeColor(input.color),
+  } as Annotation;
+}
+
+export function updateAnnotation(
+  existing: Annotation,
+  patch: Partial<Annotation> & {
+    readonly controlOffsets?:
+      readonly [ArrowControlOffset, ArrowControlOffset] | null;
+  },
+): Annotation {
+  const updated = {
+    ...existing,
+    ...patch,
+    updatedAt: patch.updatedAt ?? Date.now(),
+  } as Record<string, unknown>;
+
+  if (existing.kind === 'arrow' || updated.kind === 'arrow') {
+    if (patch.controlOffsets === null) {
+      delete updated.controlOffsets;
+    } else if (patch.controlOffsets !== undefined) {
+      updated.controlOffsets = [
+        clampArrowControlOffset(patch.controlOffsets[0]),
+        clampArrowControlOffset(patch.controlOffsets[1]),
+      ];
+    }
+  }
+
+  return updated as unknown as Annotation;
+}
+
 function serializePoint(point: AnchoredPoint): SerializedPoint {
   return {
     ts: point.ts.toString(),
@@ -125,6 +230,10 @@ function serializeAnchor(anchor: AreaAnchor): SerializedAreaAnchor {
     trackUris: [...anchor.trackUris],
     ...(anchor.trackNames !== undefined
       ? {trackNames: [...anchor.trackNames]}
+      : {}),
+    ...(anchor.topYFrac !== undefined ? {topYFrac: anchor.topYFrac} : {}),
+    ...(anchor.bottomYFrac !== undefined
+      ? {bottomYFrac: anchor.bottomYFrac}
       : {}),
   };
 }
@@ -212,6 +321,14 @@ function serializeAnnotation(annotation: Annotation): SerializedAnnotation {
         ...(annotation.controlOffset !== undefined
           ? {controlOffset: annotation.controlOffset}
           : {}),
+        ...(annotation.controlOffsets !== undefined
+          ? {
+              controlOffsets: [
+                annotation.controlOffsets[0],
+                annotation.controlOffsets[1],
+              ],
+            }
+          : {}),
       };
   }
 }
@@ -241,6 +358,10 @@ function deserializeAnchor(anchor: SerializedAreaAnchor): AreaAnchor {
     trackUris: [...anchor.trackUris],
     ...(anchor.trackNames !== undefined
       ? {trackNames: [...anchor.trackNames]}
+      : {}),
+    ...(anchor.topYFrac !== undefined ? {topYFrac: anchor.topYFrac} : {}),
+    ...(anchor.bottomYFrac !== undefined
+      ? {bottomYFrac: anchor.bottomYFrac}
       : {}),
   };
 }
@@ -405,6 +526,14 @@ function deserializeAnnotation(annotation: SerializedAnnotation): Annotation {
         ...(annotation.controlOffset !== undefined
           ? {controlOffset: annotation.controlOffset}
           : {}),
+        ...(annotation.controlOffsets !== undefined
+          ? {
+              controlOffsets: [
+                annotation.controlOffsets[0],
+                annotation.controlOffsets[1],
+              ],
+            }
+          : {}),
       };
   }
 }
@@ -481,6 +610,15 @@ export class AnnotationStore {
         ? normalizeColor(inputObj.backgroundColor)
         : undefined;
 
+    let clampedControlOffsets:
+      readonly [ArrowControlOffset, ArrowControlOffset] | undefined;
+    if (input.kind === 'arrow' && input.controlOffsets !== undefined) {
+      clampedControlOffsets = [
+        clampArrowControlOffset(input.controlOffsets[0]),
+        clampArrowControlOffset(input.controlOffsets[1]),
+      ];
+    }
+
     const completeAnnotation = {
       ...input,
       color: normalizeColor(input.color),
@@ -493,6 +631,9 @@ export class AnnotationStore {
       ...(normalizedBackgroundColor !== undefined
         ? {backgroundColor: normalizedBackgroundColor}
         : {}),
+      ...(clampedControlOffsets !== undefined
+        ? {controlOffsets: clampedControlOffsets}
+        : {}),
       id: annotationId,
       createdAt,
       updatedAt,
@@ -504,7 +645,13 @@ export class AnnotationStore {
     return completeAnnotation;
   }
 
-  update(id: string, patch: Partial<Annotation>): Annotation | undefined {
+  update(
+    id: string,
+    patch: Partial<Annotation> & {
+      readonly controlOffsets?:
+        readonly [ArrowControlOffset, ArrowControlOffset] | null;
+    },
+  ): Annotation | undefined {
     const existing = this.annotations.get(id);
     if (!existing) {
       return undefined;
@@ -534,6 +681,20 @@ export class AnnotationStore {
           ? normalizeColor(patchObj.backgroundColor)
           : undefined;
     }
+    if ('controlOffsets' in patchObj) {
+      if (patchObj.controlOffsets === null) {
+        delete normalizedPatch.controlOffsets;
+      } else if (patchObj.controlOffsets !== undefined) {
+        const offsets = patchObj.controlOffsets as [
+          ArrowControlOffset,
+          ArrowControlOffset,
+        ];
+        normalizedPatch.controlOffsets = [
+          clampArrowControlOffset(offsets[0]),
+          clampArrowControlOffset(offsets[1]),
+        ];
+      }
+    }
 
     this.pushUndoSnapshot();
     const updated = {
@@ -548,6 +709,9 @@ export class AnnotationStore {
       if (normalizedPatch[key] === undefined) {
         delete updated[key];
       }
+    }
+    if ('controlOffsets' in patchObj && patchObj.controlOffsets === null) {
+      delete updated.controlOffsets;
     }
 
     const finalAnnotation = updated as unknown as Annotation;

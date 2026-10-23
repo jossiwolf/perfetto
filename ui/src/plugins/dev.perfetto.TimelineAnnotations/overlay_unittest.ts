@@ -26,6 +26,7 @@ import {
   AnnotationsOverlay,
   colorWithAlpha,
   drawSmoothPolyline,
+  resolveCanvasFontFamily,
 } from './overlay';
 import {ToolController} from './tools';
 
@@ -1002,5 +1003,181 @@ describe('TimelineAnnotations: overlay.ts', () => {
     ]);
     expect(calls3.some((c) => c.method === 'quadraticCurveTo')).toBe(true);
     expect(calls3.some((c) => c.method === 'lineTo')).toBe(true);
+  });
+
+  test('resolveCanvasFontFamily maps font families properly', () => {
+    expect(resolveCanvasFontFamily('Roboto')).toBe(
+      '"Roboto", "Inter", system-ui, sans-serif',
+    );
+    expect(resolveCanvasFontFamily('sans-serif')).toBe(
+      '"Roboto", "Inter", system-ui, sans-serif',
+    );
+    expect(resolveCanvasFontFamily(undefined)).toBe(
+      '"Roboto", "Inter", system-ui, sans-serif',
+    );
+    expect(resolveCanvasFontFamily('Roboto Condensed')).toBe(
+      '"Roboto Condensed", "Roboto", sans-serif',
+    );
+    expect(resolveCanvasFontFamily('Roboto Mono')).toBe(
+      '"Roboto Mono", "JetBrains Mono", monospace',
+    );
+    expect(resolveCanvasFontFamily('monospace')).toBe(
+      '"Roboto Mono", "JetBrains Mono", monospace',
+    );
+    expect(resolveCanvasFontFamily('Google Sans')).toBe(
+      '"Google Sans", "Roboto", system-ui, sans-serif',
+    );
+    expect(resolveCanvasFontFamily('Inter')).toBe(
+      '"Inter", "Roboto", system-ui, sans-serif',
+    );
+    expect(resolveCanvasFontFamily('Georgia')).toBe(
+      'Georgia, "Times New Roman", serif',
+    );
+    expect(resolveCanvasFontFamily('serif')).toBe(
+      'Georgia, "Times New Roman", serif',
+    );
+  });
+
+  test('preserves exact resolution status when track exists across secondary rootNode render passes', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools, {
+      trackExists: (uri) => uri === 'scroll_track' || uri === 'pinned_track',
+    });
+
+    const pinnedRoot = new TrackNode({name: 'Pinned Root'});
+    const pinnedTrack = new TrackNode({uri: 'pinned_track', name: 'Pinned 1'});
+    pinnedRoot.addChildLast(pinnedTrack);
+
+    const scrollRoot = new TrackNode({name: 'Scrolling Root'});
+    const scrollTrack = new TrackNode({uri: 'scroll_track', name: 'Scroll 1'});
+    scrollRoot.addChildLast(scrollTrack);
+
+    const rect = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['scroll_track'],
+      },
+    });
+
+    const pinnedTracks: TrackBounds[] = [
+      {node: pinnedTrack, verticalBounds: {top: 10, bottom: 60}},
+    ];
+    const scrollTracks: TrackBounds[] = [
+      {node: scrollTrack, verticalBounds: {top: 100, bottom: 200}},
+    ];
+
+    // Pass 1: Render pinned tracks tree (scroll_track is not present here)
+    const {ctx: ctxPinned1} = createFakeCanvasContext();
+    overlay.render(
+      ctxPinned1,
+      timescale,
+      size,
+      pinnedTracks,
+      theme,
+      pinnedRoot,
+    );
+
+    // Because scroll_track exists in the workspace, status must be 'exact' (not degraded or unanchored)
+    expect(overlay.lastRender.get(rect.id)?.status).toBe('exact');
+
+    // Pass 2: Render scrolling tracks tree (scroll_track is present here)
+    const {ctx: ctxScroll} = createFakeCanvasContext();
+    overlay.render(ctxScroll, timescale, size, scrollTracks, theme, scrollRoot);
+    expect(overlay.lastRender.get(rect.id)?.status).toBe('exact');
+
+    // Pass 3: Next frame renders pinned tracks tree again
+    const {ctx: ctxPinned2} = createFakeCanvasContext();
+    overlay.render(
+      ctxPinned2,
+      timescale,
+      size,
+      pinnedTracks,
+      theme,
+      pinnedRoot,
+    );
+    // Must STILL be 'exact' and not degraded
+    expect(overlay.lastRender.get(rect.id)?.status).toBe('exact');
+  });
+
+  test('uses grab cursor and segmented interaction zones for arrow and path', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    const arrow = store.add({
+      kind: 'arrow',
+      color: '#00897b',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const path = store.add({
+      kind: 'path',
+      color: '#8e24aa',
+      points: [
+        {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.2},
+        {ts: Time.fromRaw(200n), trackUri: 'track_1', yFrac: 0.8},
+        {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      ],
+    });
+
+    const rect = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const {ctx} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    const timelineRect = new Rect2D({
+      left: 0,
+      top: 0,
+      right: 1000,
+      bottom: 500,
+    });
+    const zones = overlay.getInteractionZones({
+      timelineRect,
+      timescale,
+      tracks: visibleTracks,
+      rootNode,
+    });
+
+    // Check arrow zones
+    const arrowZones = zones.filter((z) => z.id === `annotation:${arrow.id}`);
+    expect(arrowZones.length).toBeGreaterThanOrEqual(8);
+    for (const z of arrowZones) {
+      expect(z.cursor).toBe('grab');
+      expect(z.area.width).toBe(14);
+      expect(z.area.height).toBe(14);
+    }
+
+    // Check path zones
+    const pathZones = zones.filter((z) => z.id === `annotation:${path.id}`);
+    expect(pathZones.length).toBeGreaterThan(0);
+    for (const z of pathZones) {
+      expect(z.cursor).toBe('grab');
+      expect(z.area.width).toBe(14);
+      expect(z.area.height).toBe(14);
+    }
+
+    // Check rect zone
+    const rectZone = zones.find((z) => z.id === `annotation:${rect.id}`);
+    expect(rectZone).toBeDefined();
+    expect(rectZone?.cursor).toBe('grab');
   });
 });

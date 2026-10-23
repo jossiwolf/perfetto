@@ -23,6 +23,8 @@ import {
   ANNOTATIONS_TAB_URI,
   AnnotationsTab,
   ColorSwatches,
+  LABEL_FONT_OPTIONS,
+  LABEL_FONT_SIZES,
   PALETTE_COLORS,
   colorWithAlpha,
   getToolIcon,
@@ -201,11 +203,36 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     const countElement = root.querySelector('.pf-timeline-annotations-count');
     expect(countElement).toBeNull();
 
-    // Confirm ZERO select elements exist in the entire tab
-    const selectElements = root.querySelectorAll('select');
-    expect(selectElements.length).toBe(0);
+    // Verify 2-row layout classes exist on items
+    const rectItem = items[0];
+    const labelItem = items[1];
+    expect(
+      rectItem.querySelector('.pf-timeline-annotations-item__header'),
+    ).not.toBeNull();
+    expect(
+      rectItem.querySelector('.pf-timeline-annotations-item__body'),
+    ).not.toBeNull();
+    expect(
+      labelItem.querySelector('.pf-timeline-annotations-item__header'),
+    ).not.toBeNull();
+    expect(
+      labelItem.querySelector('.pf-timeline-annotations-item__body'),
+    ).not.toBeNull();
 
-    // Each row renders a compact color trigger button
+    // Rect item has ZERO select elements
+    expect(rectItem.querySelectorAll('select').length).toBe(0);
+
+    // Label item has inline font-family and font-size select elements
+    const labelSelects = labelItem.querySelectorAll('select');
+    expect(labelSelects.length).toBe(2);
+    expect(
+      labelItem.querySelector('.pf-timeline-annotations-font-select'),
+    ).not.toBeNull();
+    expect(
+      labelItem.querySelector('.pf-timeline-annotations-size-select'),
+    ).not.toBeNull();
+
+    // Each item renders a compact color trigger button
     const rowTriggers = root.querySelectorAll(
       '.pf-timeline-annotations-item .pf-timeline-annotations__color-trigger',
     );
@@ -287,6 +314,10 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     expect(
       autoSwatch?.classList.contains('pf-timeline-annotations__swatch--active'),
     ).toBe(true);
+    // Verify sync icon
+    expect(autoSwatch?.querySelector('.pf-icon')?.textContent?.trim()).toBe(
+      'sync',
+    );
 
     const noneSwatch = root.querySelector(
       '.pf-timeline-annotations__swatch--none',
@@ -295,6 +326,7 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     expect(
       noneSwatch?.classList.contains('pf-timeline-annotations__swatch--active'),
     ).toBe(false);
+    expect(noneSwatch?.getAttribute('title')).toBe('No fill (transparent)');
 
     autoSwatch?.click();
     expect(selectedStroke).toBe(true);
@@ -494,14 +526,13 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     expect(confirmButton).toBeDefined();
     confirmButton?.click();
 
-    // Store is now empty
-    expect(store.list().length).toBe(0);
-
-    // Re-render, modal is gone
+    // Re-render, modal is in closing exit animation state
     m.render(root, tab.render());
     expect(
-      root.querySelector('.pf-timeline-annotations-clear-overlay'),
-    ).toBeNull();
+      root.querySelector(
+        '.pf-timeline-annotations-clear-dialog.pf-timeline-annotations-modal--closing',
+      ),
+    ).not.toBeNull();
   });
 
   test('changing annotation kind via store.changeKind', () => {
@@ -599,5 +630,71 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
         expandGroup: true,
       },
     });
+  });
+
+  test('inline label toolbar allows changing font family and font size', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+    const trace = {} as Trace;
+    const tab = new AnnotationsTab(trace, store, tools, overlay);
+
+    store.add({
+      id: 'label_style_test',
+      kind: 'label',
+      color: '#fb8c00',
+      text: 'Test label text',
+      fontFamily: 'Roboto',
+      fontSize: 12,
+      position: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+    });
+
+    const root = document.createElement('div');
+    m.render(root, tab.render());
+
+    const fontSelect = root.querySelector(
+      '.pf-timeline-annotations-font-select',
+    ) as HTMLSelectElement | null;
+    expect(fontSelect).not.toBeNull();
+    expect(fontSelect?.value).toBe('Roboto');
+
+    // Change font family to Google Sans
+    if (fontSelect) {
+      fontSelect.value = 'Google Sans';
+      fontSelect.dispatchEvent(new Event('change'));
+    }
+
+    const updatedFamily = store.get('label_style_test');
+    expect(updatedFamily?.kind).toBe('label');
+    if (updatedFamily?.kind === 'label') {
+      expect(updatedFamily.fontFamily).toBe('Google Sans');
+    }
+
+    // Change font size to 18
+    const sizeSelect = root.querySelector(
+      '.pf-timeline-annotations-size-select',
+    ) as HTMLSelectElement | null;
+    expect(sizeSelect).not.toBeNull();
+    if (sizeSelect) {
+      sizeSelect.value = '18';
+      sizeSelect.dispatchEvent(new Event('change'));
+    }
+
+    const updatedSize = store.get('label_style_test');
+    expect(updatedSize?.kind).toBe('label');
+    if (updatedSize?.kind === 'label') {
+      expect(updatedSize.fontSize).toBe(18);
+    }
+  });
+
+  test('LABEL_FONT_OPTIONS contains named Google Sans, Inter, Roboto Mono', () => {
+    const values = LABEL_FONT_OPTIONS.map((opt) => opt.value);
+    expect(values).toContain('Roboto');
+    expect(values).toContain('Google Sans');
+    expect(values).toContain('Inter');
+    expect(values).toContain('Roboto Mono');
+    expect(values).toContain('Georgia');
+
+    expect(LABEL_FONT_SIZES).toEqual([11, 12, 13, 14, 16, 18, 20, 24]);
   });
 });

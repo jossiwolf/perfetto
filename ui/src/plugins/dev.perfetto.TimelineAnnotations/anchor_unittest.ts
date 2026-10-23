@@ -195,6 +195,114 @@ describe('anchor.ts', () => {
         ),
       ).toBeUndefined();
     });
+
+    test('applies fractional bounds topYFrac and bottomYFrac to exact matches', () => {
+      const visibleTracks: TrackBounds[] = [
+        {node: track1, verticalBounds: {top: 100, bottom: 200}}, // height: 100
+        {node: track2, verticalBounds: {top: 200, bottom: 400}}, // height: 200
+      ];
+
+      // Single track exact match: topYFrac=0.2 => 100 + 100*0.2 = 120
+      // bottomYFrac=0.8 => 100 + 100*0.8 = 180
+      const singleTrack = resolveArea(
+        {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['track_1'],
+          topYFrac: 0.2,
+          bottomYFrac: 0.8,
+        },
+        visibleTracks,
+        rootNode,
+      );
+      expect(singleTrack).toEqual({
+        top: 120,
+        bottom: 180,
+        resolved: ['track_1'],
+        missing: [],
+      });
+
+      // Spanning two tracks:
+      // firstBounds (track_1): top = 100, height = 100 => topYFrac 0.4 => 100 + 40 = 140
+      // lastBounds (track_2): top = 200, height = 200 => bottomYFrac 0.6 => 200 + 120 = 320
+      const multiTrack = resolveArea(
+        {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['track_1', 'track_2'],
+          topYFrac: 0.4,
+          bottomYFrac: 0.6,
+        },
+        visibleTracks,
+        rootNode,
+      );
+      expect(multiTrack).toEqual({
+        top: 140,
+        bottom: 320,
+        resolved: ['track_1', 'track_2'],
+        missing: [],
+      });
+    });
+
+    test('enforces minimum height when bottomYFrac <= topYFrac', () => {
+      const visibleTracks: TrackBounds[] = [
+        {node: track1, verticalBounds: {top: 100, bottom: 200}},
+      ];
+
+      const zeroHeight = resolveArea(
+        {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['track_1'],
+          topYFrac: 0.5,
+          bottomYFrac: 0.5,
+        },
+        visibleTracks,
+        rootNode,
+      );
+      expect(zeroHeight?.top).toBe(150);
+      expect(zeroHeight?.bottom).toBe(152); // minTop + 2
+
+      const invertedHeight = resolveArea(
+        {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['track_1'],
+          topYFrac: 0.8,
+          bottomYFrac: 0.2,
+        },
+        visibleTracks,
+        rootNode,
+      );
+      expect(invertedHeight?.top).toBe(180);
+      expect(invertedHeight?.bottom).toBe(182); // minTop + 2
+    });
+
+    test('fractional bounds only apply when first/last status is exact', () => {
+      // track1 is child of group1. If track1 is collapsed and group1 is visible,
+      // resolution status is 'ancestor', so topYFrac is ignored (preserves full ancestor bounds)
+      const visibleTracks: TrackBounds[] = [
+        {node: group1, verticalBounds: {top: 50, bottom: 120}},
+      ];
+
+      const ancestorResult = resolveArea(
+        {
+          start: Time.fromRaw(0n),
+          end: Time.fromRaw(10n),
+          trackUris: ['track_1'],
+          topYFrac: 0.25,
+          bottomYFrac: 0.75,
+        },
+        visibleTracks,
+        rootNode,
+      );
+      expect(ancestorResult).toEqual({
+        top: 50,
+        bottom: 120,
+        resolved: ['track_1'],
+        missing: [],
+      });
+    });
   });
 
   describe('resolvePoint', () => {

@@ -184,10 +184,85 @@ export class AnnotationTrack {
   private syncPromise = Promise.resolve();
   private storeSubscription?: Disposable;
   private isDisposed = false;
+  private lastRowsFingerprint: string | undefined = undefined;
 
   constructor(trace: Trace, store: AnnotationStore) {
     this.trace = trace;
     this.store = store;
+  }
+
+  computeRows(): ReadonlyArray<
+    AnnotationRow & {readonly annotation_id: string}
+  > {
+    const annotations = this.store.list();
+    if (annotations.length === 0) {
+      return [];
+    }
+    const resolver = (lookupId: string) => this.store.get(lookupId);
+    return annotations.map((annotation) => {
+      const row = annotationToRow(annotation, resolver);
+      return {
+        ...row,
+        annotation_id: row.id,
+      };
+    });
+  }
+
+  createRenderer() {
+    const dataset = () =>
+      new SourceDataset({
+        src: `SELECT rowid AS id, ts, dur, name, kind, color, description, id AS annotation_id FROM __timeline_annotations /* v${this.version} */`,
+        schema: {
+          id: NUM,
+          ts: LONG,
+          dur: LONG,
+          name: STR,
+          kind: STR,
+          color: STR,
+          description: STR,
+          annotation_id: STR,
+        },
+      });
+
+    return SliceTrack.create({
+      trace: this.trace,
+      uri: ANNOTATION_TRACK_URI,
+      dataset,
+      getKey: () => String(this.version),
+      colorizer: (row) => getAnnotationColorScheme(row),
+      onSliceClick: ({slice}) => {
+        const annotationId = slice.row.annotation_id;
+        if (annotationId) {
+          this.store.select(annotationId);
+          this.trace.tabs.showTab(
+            'dev.perfetto.TimelineAnnotations#AnnotationsTab',
+          );
+          if (
+            typeof requestAnimationFrame === 'function' &&
+            typeof document !== 'undefined'
+          ) {
+            requestAnimationFrame(() => {
+              const itemEl = document.querySelector<HTMLElement>(
+                `[data-annotation-id="${annotationId}"]`,
+              );
+              itemEl?.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+            });
+          }
+        }
+      },
+      detailsPanel: (row) => ({
+        render: () =>
+          m(
+            '.pf-timeline-annotations-details',
+            m('h2', row.name),
+            m('p', m('strong', 'Kind: '), row.kind),
+            row.description
+              ? m('p', m('strong', 'Description: '), row.description)
+              : null,
+            m('p', m('strong', 'Color: '), row.color),
+          ),
+      }),
+    });
   }
 
   async init(): Promise<void> {
@@ -203,39 +278,7 @@ export class AnnotationTrack {
       );
     `);
 
-    const dataset = () =>
-      new SourceDataset({
-        src: `SELECT rowid AS id, ts, dur, name, kind, color, description, id AS annotation_id FROM __timeline_annotations /* v${this.version} */`,
-        schema: {
-          id: NUM,
-          ts: LONG,
-          dur: LONG,
-          name: STR,
-          kind: STR,
-          color: STR,
-          description: STR,
-        },
-      });
-
-    const sliceTrack = SliceTrack.create({
-      trace: this.trace,
-      uri: ANNOTATION_TRACK_URI,
-      dataset,
-      getKey: () => String(this.version),
-      colorizer: (row) => getAnnotationColorScheme(row),
-      detailsPanel: (row) => ({
-        render: () =>
-          m(
-            '.pf-timeline-annotations-details',
-            m('h2', row.name),
-            m('p', m('strong', 'Kind: '), row.kind),
-            row.description
-              ? m('p', m('strong', 'Description: '), row.description)
-              : null,
-            m('p', m('strong', 'Color: '), row.color),
-          ),
-      }),
-    });
+    const sliceTrack = this.createRenderer();
 
     this.trace.tracks.registerTrack({
       uri: ANNOTATION_TRACK_URI,
@@ -286,16 +329,22 @@ export class AnnotationTrack {
   }
 
   private async syncToTable(): Promise<void> {
+    const rows = this.computeRows();
+    const fingerprint = rows
+      .map(
+        (r) =>
+          `${r.id}:${r.ts}:${r.dur}:${r.name}:${r.color}:${r.annotation_id}`,
+      )
+      .join('|');
+    if (fingerprint === this.lastRowsFingerprint) {
+      return;
+    }
+    this.lastRowsFingerprint = fingerprint;
+
     await this.trace.engine.query('DELETE FROM __timeline_annotations;');
     if (this.isDisposed) return;
 
-    const annotations = this.store.list();
-    if (annotations.length > 0) {
-      const resolver = (lookupId: string) => this.store.get(lookupId);
-      const rows = annotations.map((annotation) =>
-        annotationToRow(annotation, resolver),
-      );
-
+    if (rows.length > 0) {
       const batchSize = 100;
       for (let i = 0; i < rows.length; i += batchSize) {
         const batch = rows.slice(i, i + batchSize);

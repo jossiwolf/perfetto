@@ -45,6 +45,8 @@ export const SerializedAreaAnchorSchema = z.object({
   end: SerializedTimestampSchema,
   trackUris: z.array(z.string().min(1)),
   trackNames: z.array(z.string()).optional(),
+  topYFrac: z.number().min(0).max(1).optional(),
+  bottomYFrac: z.number().min(0).max(1).optional(),
 });
 
 export const SerializedArrowEndpointSchema = z.discriminatedUnion('kind', [
@@ -83,11 +85,17 @@ export const SerializedEllipseAnnotationSchema =
   });
 
 export const LabelFontFamilySchema = z.enum([
+  'Roboto',
+  'Roboto Condensed',
+  'Roboto Mono',
+  'Google Sans',
+  'Inter',
+  'Georgia',
   'sans-serif',
   'monospace',
   'serif',
 ]);
-export type LabelFontFamily = 'sans-serif' | 'monospace' | 'serif';
+export type LabelFontFamily = z.infer<typeof LabelFontFamilySchema>;
 
 export const SerializedLabelAnnotationSchema =
   SerializedBaseAnnotationSchema.extend({
@@ -122,6 +130,9 @@ export const SerializedArrowAnnotationSchema =
     to: SerializedArrowEndpointSchema,
     curvature: z.number().min(-1000).max(1000).optional(),
     controlOffset: ArrowControlOffsetSchema.optional(),
+    controlOffsets: z
+      .tuple([ArrowControlOffsetSchema, ArrowControlOffsetSchema])
+      .optional(),
   });
 
 export const SerializedAnnotationSchema = z.discriminatedUnion('kind', [

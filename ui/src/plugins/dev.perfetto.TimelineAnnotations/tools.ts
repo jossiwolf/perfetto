@@ -14,16 +14,18 @@
 
 import {Time} from '../../base/time';
 import type {Point2D} from '../../base/geom';
-import type {OverlayPointerEvent} from '../../public/track';
+import type {OverlayPointerEvent, TrackBounds} from '../../public/track';
 import type {TrackNode} from '../../public/workspace';
 import type {
   AnchoredPoint,
   Annotation,
   AreaAnchor,
+  ArrowControlOffset,
   ArrowEndpoint,
   AnnotationStore,
 } from './model';
 import {areaForTrackRange, pointAtY, resolveTrackY} from './anchor';
+import * as geomModule from './geometry';
 import {
   bboxOf,
   computeQuadraticControlPoint,
@@ -38,6 +40,183 @@ import {
   simplifyPath,
   smoothPath,
 } from './geometry';
+
+// Local cubic bezier helpers with fallback to geometry.ts exports if available
+export function localComputeCubicBaseControlPoints(
+  start: Point2D,
+  end: Point2D,
+): [Point2D, Point2D] {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  return [
+    {x: start.x + dx / 3, y: start.y + dy / 3},
+    {x: start.x + (2 * dx) / 3, y: start.y + (2 * dy) / 3},
+  ];
+}
+
+export function localComputeCubicControlPoints(
+  start: Point2D,
+  end: Point2D,
+  controlOffsets?: readonly [
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+    {
+      readonly dxFrac?: number;
+      readonly dyPx?: number;
+      readonly alongFrac?: number;
+      readonly normalPx?: number;
+    },
+  ],
+  legacyControlOffset?: {
+    readonly dxFrac?: number;
+    readonly dyPx?: number;
+    readonly alongFrac?: number;
+    readonly normalPx?: number;
+  },
+): [Point2D, Point2D] {
+  const [base1, base2] = localComputeCubicBaseControlPoints(start, end);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const span = Math.max(Math.hypot(dx, dy), 1);
+
+  if (controlOffsets && controlOffsets.length === 2) {
+    const off0Dx = controlOffsets[0].dxFrac ?? controlOffsets[0].alongFrac ?? 0;
+    const off0Dy = controlOffsets[0].dyPx ?? controlOffsets[0].normalPx ?? 0;
+    const off1Dx = controlOffsets[1].dxFrac ?? controlOffsets[1].alongFrac ?? 0;
+    const off1Dy = controlOffsets[1].dyPx ?? controlOffsets[1].normalPx ?? 0;
+    return [
+      {
+        x: base1.x + off0Dx * span,
+        y: base1.y + off0Dy,
+      },
+      {
+        x: base2.x + off1Dx * span,
+        y: base2.y + off1Dy,
+      },
+    ];
+  }
+
+  if (legacyControlOffset !== undefined) {
+    const normalPx =
+      legacyControlOffset.normalPx ?? legacyControlOffset.dyPx ?? 0;
+    let nx = 0;
+    let ny = -1;
+    if (span > 1e-6) {
+      nx = -dy / span;
+      ny = dx / span;
+    }
+    const dispX = nx * normalPx;
+    const dispY = ny * normalPx;
+    return [
+      {x: base1.x + dispX, y: base1.y + dispY},
+      {x: base2.x + dispX, y: base2.y + dispY},
+    ];
+  }
+
+  return [base1, base2];
+}
+
+export function localEvaluateCubicBezier(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tt = t * t;
+  const uu = u * u;
+  const uuu = uu * u;
+  const ttt = tt * t;
+  return {
+    x: uuu * p0.x + 3 * uu * t * p1.x + 3 * u * tt * p2.x + ttt * p3.x,
+    y: uuu * p0.y + 3 * uu * t * p1.y + 3 * u * tt * p2.y + ttt * p3.y,
+  };
+}
+
+export function localEvaluateCubicBezierTangent(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tangentX =
+    3 * u * u * (p1.x - p0.x) +
+    6 * u * t * (p2.x - p1.x) +
+    3 * t * t * (p3.x - p2.x);
+  const tangentY =
+    3 * u * u * (p1.y - p0.y) +
+    6 * u * t * (p2.y - p1.y) +
+    3 * t * t * (p3.y - p2.y);
+  if (Math.hypot(tangentX, tangentY) < 1e-4) {
+    return {x: p3.x - p0.x, y: p3.y - p0.y};
+  }
+  return {x: tangentX, y: tangentY};
+}
+
+export function localSampleCubicBezier(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  steps = 24,
+): Point2D[] {
+  const count = Math.max(2, steps);
+  const points: Point2D[] = [];
+  for (let index = 0; index <= count; index += 1) {
+    points.push(localEvaluateCubicBezier(p0, p1, p2, p3, index / count));
+  }
+  return points;
+}
+
+export function localHitTestCubicBezier(
+  pt: Point2D,
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  tolerancePx: number,
+  steps = 32,
+): boolean {
+  const sampled = localSampleCubicBezier(p0, p1, p2, p3, steps);
+  return hitTestPolyline(pt, sampled, tolerancePx);
+}
+
+export function localComputeCubicBezierBoundingBox(
+  p0: Point2D,
+  p1: Point2D,
+  p2: Point2D,
+  p3: Point2D,
+  paddingPx = 12,
+): RectBounds {
+  const sampled = localSampleCubicBezier(p0, p1, p2, p3, 24);
+  const baseBox = bboxOf(sampled);
+  return {
+    left: baseBox.left - paddingPx,
+    top: baseBox.top - paddingPx,
+    right: baseBox.right + paddingPx,
+    bottom: baseBox.bottom + paddingPx,
+    width: baseBox.width + 2 * paddingPx,
+    height: baseBox.height + 2 * paddingPx,
+  };
+}
+
+const computeCubicBaseControlPoints =
+  (
+    geomModule as {
+      computeCubicBaseControlPoints?: typeof localComputeCubicBaseControlPoints;
+    }
+  ).computeCubicBaseControlPoints ?? localComputeCubicBaseControlPoints;
+
+const hitTestCubicBezier =
+  (geomModule as {hitTestCubicBezier?: typeof localHitTestCubicBezier})
+    .hitTestCubicBezier ?? localHitTestCubicBezier;
 
 export type ToolKind =
   'select' | 'rect' | 'ellipse' | 'pen' | 'arrow' | 'label';
@@ -84,6 +263,7 @@ export type GesturePreview =
       readonly annotationId: string;
       readonly start: Point2D;
       readonly control: Point2D;
+      readonly controlPoints?: readonly [Point2D, Point2D];
       readonly end: Point2D;
       readonly color: string;
     };
@@ -103,6 +283,7 @@ export interface AnnotationGeometry {
   readonly start?: Point2D;
   readonly end?: Point2D;
   readonly control?: Point2D;
+  readonly controlPoints?: readonly [Point2D, Point2D];
   readonly curveMidpoint?: Point2D;
 }
 
@@ -125,6 +306,8 @@ interface ActiveGesture {
   curveTargetId?: string;
   arrowStartPx?: Point2D;
   arrowEndPx?: Point2D;
+  controlHandleId?: 'arrow-control-1' | 'arrow-control-2' | 'arrow-midpoint';
+  origControlPoints?: [Point2D, Point2D];
 }
 
 import {PALETTE_COLORS} from './annotations_tab';
@@ -317,21 +500,31 @@ export class ToolController {
     const pointerPos: Point2D = {x: event.x, y: event.y};
 
     if (!this.isDrawingModeActive || this.activeToolKind === 'select') {
-      const hitCurveArrow = this.hitTestCurveHandle(pointerPos, event.rootNode);
+      const hitCurveInfo = this.hitTestCurveHandle(pointerPos, event.rootNode);
       if (
-        hitCurveArrow !== undefined &&
-        hitCurveArrow.start !== undefined &&
-        hitCurveArrow.end !== undefined
+        hitCurveInfo !== undefined &&
+        hitCurveInfo.geom.start !== undefined &&
+        hitCurveInfo.geom.end !== undefined
       ) {
-        this.store.select(hitCurveArrow.id);
-        this.opts.onAnnotationSelected?.(hitCurveArrow.id);
+        this.store.select(hitCurveInfo.geom.id);
+        this.opts.onAnnotationSelected?.(hitCurveInfo.geom.id);
+
+        const [cp1, cp2] =
+          hitCurveInfo.geom.controlPoints ??
+          computeCubicBaseControlPoints(
+            hitCurveInfo.geom.start,
+            hitCurveInfo.geom.end,
+          );
+
         this.activeGestureState = {
           tool: 'arrow-curve',
           startEvent: event,
           currentEvent: event,
-          curveTargetId: hitCurveArrow.id,
-          arrowStartPx: hitCurveArrow.start,
-          arrowEndPx: hitCurveArrow.end,
+          curveTargetId: hitCurveInfo.geom.id,
+          arrowStartPx: hitCurveInfo.geom.start,
+          arrowEndPx: hitCurveInfo.geom.end,
+          controlHandleId: hitCurveInfo.handleId,
+          origControlPoints: [cp1, cp2],
           isDrag: false,
         };
         this.opts.requestRedraw();
@@ -516,26 +709,55 @@ export class ToolController {
 
     switch (this.activeGestureState.tool) {
       case 'arrow-curve': {
-        const {curveTargetId, arrowStartPx, arrowEndPx} =
-          this.activeGestureState;
+        const {
+          curveTargetId,
+          arrowStartPx,
+          arrowEndPx,
+          controlHandleId,
+          origControlPoints,
+        } = this.activeGestureState;
         if (curveTargetId && arrowStartPx && arrowEndPx) {
-          const {curvature, alongFrac} = curvatureFromMidpoint(
-            arrowStartPx,
-            arrowEndPx,
-            pointerPos,
-          );
-          const control = computeQuadraticControlPoint(
-            arrowStartPx,
-            arrowEndPx,
-            curvature,
-            alongFrac,
-          );
           const arrowAnn = this.store.get(curveTargetId);
+          const [base1, base2] =
+            origControlPoints ??
+            computeCubicBaseControlPoints(arrowStartPx, arrowEndPx);
+
+          let newCp1 = base1;
+          let newCp2 = base2;
+
+          if (controlHandleId === 'arrow-control-1') {
+            newCp1 = pointerPos;
+          } else if (controlHandleId === 'arrow-control-2') {
+            newCp2 = pointerPos;
+          } else {
+            // Midpoint dragging: bend both control points symmetrically
+            const {curvature, alongFrac} = curvatureFromMidpoint(
+              arrowStartPx,
+              arrowEndPx,
+              pointerPos,
+            );
+            const quadCp = computeQuadraticControlPoint(
+              arrowStartPx,
+              arrowEndPx,
+              curvature,
+              alongFrac,
+            );
+            newCp1 = {
+              x: (arrowStartPx.x + 2 * quadCp.x) / 3,
+              y: (arrowStartPx.y + 2 * quadCp.y) / 3,
+            };
+            newCp2 = {
+              x: (arrowEndPx.x + 2 * quadCp.x) / 3,
+              y: (arrowEndPx.y + 2 * quadCp.y) / 3,
+            };
+          }
+
           this.activeGesturePreview = {
             kind: 'arrow-curve',
             annotationId: curveTargetId,
             start: arrowStartPx,
-            control,
+            control: newCp1,
+            controlPoints: [newCp1, newCp2],
             end: arrowEndPx,
             color: arrowAnn?.color ?? this.activeStrokeColor,
           };
@@ -620,27 +842,96 @@ export class ToolController {
 
     switch (gesture.tool) {
       case 'arrow-curve': {
-        const {curveTargetId, arrowStartPx, arrowEndPx} = gesture;
+        const {
+          curveTargetId,
+          arrowStartPx,
+          arrowEndPx,
+          controlHandleId,
+          origControlPoints,
+        } = gesture;
         if (curveTargetId && arrowStartPx && arrowEndPx) {
-          const {curvature, alongFrac} = curvatureFromMidpoint(
+          const [base1, base2] =
+            origControlPoints ??
+            computeCubicBaseControlPoints(arrowStartPx, arrowEndPx);
+          const [origBase1, origBase2] = computeCubicBaseControlPoints(
             arrowStartPx,
             arrowEndPx,
-            pointerPos,
           );
-          if (Math.abs(curvature) < 3) {
-            this.store.update(curveTargetId, {
-              curvature: 0,
-              controlOffset: undefined,
-            });
+          const dx = arrowEndPx.x - arrowStartPx.x;
+          const dy = arrowEndPx.y - arrowStartPx.y;
+          const span = Math.max(Math.hypot(dx, dy), 1);
+
+          let newCp1 = base1;
+          let newCp2 = base2;
+
+          if (controlHandleId === 'arrow-control-1') {
+            newCp1 = pointerPos;
+          } else if (controlHandleId === 'arrow-control-2') {
+            newCp2 = pointerPos;
           } else {
-            this.store.update(curveTargetId, {
-              curvature: Math.round(curvature),
-              controlOffset: {
+            const {curvature, alongFrac} = curvatureFromMidpoint(
+              arrowStartPx,
+              arrowEndPx,
+              pointerPos,
+            );
+            if (Math.abs(curvature) < 3) {
+              this.store.update(curveTargetId, {
+                curvature: 0,
+                controlOffset: undefined,
+                controlOffsets: undefined,
+              });
+              break;
+            } else {
+              const quadCp = computeQuadraticControlPoint(
+                arrowStartPx,
+                arrowEndPx,
+                curvature,
+                alongFrac,
+              );
+              newCp1 = {
+                x: (arrowStartPx.x + 2 * quadCp.x) / 3,
+                y: (arrowStartPx.y + 2 * quadCp.y) / 3,
+              };
+              newCp2 = {
+                x: (arrowEndPx.x + 2 * quadCp.x) / 3,
+                y: (arrowEndPx.y + 2 * quadCp.y) / 3,
+              };
+              const legacyOffset: ArrowControlOffset = {
                 alongFrac: Number(alongFrac.toFixed(3)),
                 normalPx: Math.round(curvature),
-              },
-            });
+              };
+              const off1: ArrowControlOffset = {
+                alongFrac: Number(((newCp1.x - origBase1.x) / span).toFixed(4)),
+                normalPx: Math.round(newCp1.y - origBase1.y),
+              };
+              const off2: ArrowControlOffset = {
+                alongFrac: Number(((newCp2.x - origBase2.x) / span).toFixed(4)),
+                normalPx: Math.round(newCp2.y - origBase2.y),
+              };
+              this.store.update(curveTargetId, {
+                curvature: Math.round(curvature),
+                controlOffset: legacyOffset,
+                controlOffsets: [off1, off2],
+              });
+              break;
+            }
           }
+
+          const dxFrac1 = Number(((newCp1.x - origBase1.x) / span).toFixed(4));
+          const dyPx1 = Math.round(newCp1.y - origBase1.y);
+          const dxFrac2 = Number(((newCp2.x - origBase2.x) / span).toFixed(4));
+          const dyPx2 = Math.round(newCp2.y - origBase2.y);
+          const off1: ArrowControlOffset = {
+            alongFrac: dxFrac1,
+            normalPx: dyPx1,
+          };
+          const off2: ArrowControlOffset = {
+            alongFrac: dxFrac2,
+            normalPx: dyPx2,
+          };
+          this.store.update(curveTargetId, {
+            controlOffsets: [off1, off2],
+          });
         }
         break;
       }
@@ -686,6 +977,7 @@ export class ToolController {
           });
           this.createdFromRects.set(created.id, drawnRect);
           this.store.select(created.id);
+          this.activeToolKind = 'select';
           this.opts.onAnnotationCreated?.(created.id);
         }
         break;
@@ -741,6 +1033,7 @@ export class ToolController {
               });
               this.createdFromRects.set(created.id, recognized.bbox);
               this.store.select(created.id);
+              this.activeToolKind = 'select';
               this.opts.onAnnotationCreated?.(created.id);
             }
           } else if (recognized.kind === 'line') {
@@ -779,6 +1072,7 @@ export class ToolController {
                   to: {kind: 'point', point: endPoint},
                 });
                 this.store.select(created.id);
+                this.activeToolKind = 'select';
                 this.opts.onAnnotationCreated?.(created.id);
               }
             }
@@ -819,6 +1113,7 @@ export class ToolController {
                   points: anchoredPoints,
                 });
                 this.store.select(created.id);
+                this.activeToolKind = 'select';
                 this.opts.onAnnotationCreated?.(created.id);
               }
             }
@@ -874,6 +1169,7 @@ export class ToolController {
               to: arrowTo,
             });
             this.store.select(created.id);
+            this.activeToolKind = 'select';
             this.opts.onAnnotationCreated?.(created.id);
           }
         }
@@ -903,6 +1199,7 @@ export class ToolController {
             });
             this.requestAutoFocus(created.id);
             this.store.select(created.id);
+            this.activeToolKind = 'select';
             this.opts.onAnnotationCreated?.(created.id);
           }
         }
@@ -917,60 +1214,101 @@ export class ToolController {
           const annotationId = gesture.selectedTargetId;
           const targetAnnotation = this.store.get(annotationId);
           if (targetAnnotation !== undefined) {
-            const deltaTs = Time.diff(event.ts, startEvent.ts);
+            const deltaX = event.x - startEvent.x;
             const deltaY = event.y - startEvent.y;
 
             if (
               targetAnnotation.kind === 'rect' ||
               targetAnnotation.kind === 'ellipse'
             ) {
-              const origAnchor =
-                gesture.initialAnchor ?? targetAnnotation.anchor;
-              const newStart = Time.add(origAnchor.start, deltaTs);
-              const newEnd = Time.add(origAnchor.end, deltaTs);
-              let newTrackUris = origAnchor.trackUris;
-              let newTrackNames = origAnchor.trackNames;
-
               const origGeom = this.getGeometryForId(
                 annotationId,
                 event.rootNode,
               );
               if (origGeom !== undefined) {
+                const newLeft = origGeom.bbox.left + deltaX;
+                const newRight = origGeom.bbox.right + deltaX;
                 const newTop = origGeom.bbox.top + deltaY;
                 const newBottom = origGeom.bbox.bottom + deltaY;
-                const reanchoredUris = areaForTrackRange(
-                  newTop,
-                  newBottom,
-                  event.tracks,
-                );
-                if (reanchoredUris.length > 0) {
-                  newTrackUris = reanchoredUris;
-                  newTrackNames = reanchoredUris.map(
-                    (uri) =>
-                      event.tracks.find((track) => track.node.uri === uri)?.node
-                        .name ?? '',
+
+                const startTs = event.timescale.pxToHpTime(newLeft).toTime();
+                const endTs = event.timescale.pxToHpTime(newRight).toTime();
+
+                const intersectingTracks: TrackBounds[] = [];
+                for (const track of event.tracks) {
+                  if (
+                    newBottom > newTop
+                      ? track.verticalBounds.bottom > newTop &&
+                        track.verticalBounds.top < newBottom
+                      : track.verticalBounds.bottom >= newTop &&
+                        track.verticalBounds.top <= newBottom
+                  ) {
+                    intersectingTracks.push(track);
+                  }
+                }
+
+                if (intersectingTracks.length > 0) {
+                  const firstTrack = intersectingTracks[0];
+                  const lastTrack =
+                    intersectingTracks[intersectingTracks.length - 1];
+                  const firstH = Math.max(
+                    firstTrack.verticalBounds.bottom -
+                      firstTrack.verticalBounds.top,
+                    1,
                   );
+                  const lastH = Math.max(
+                    lastTrack.verticalBounds.bottom -
+                      lastTrack.verticalBounds.top,
+                    1,
+                  );
+                  const topYFrac = Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      (newTop - firstTrack.verticalBounds.top) / firstH,
+                    ),
+                  );
+                  const bottomYFrac = Math.max(
+                    0,
+                    Math.min(
+                      1,
+                      (newBottom - lastTrack.verticalBounds.top) / lastH,
+                    ),
+                  );
+                  const trackUris = intersectingTracks
+                    .map((track) => track.node.uri)
+                    .filter((uri): uri is string => Boolean(uri));
+                  const trackNames = intersectingTracks.map(
+                    (track) => track.node.name ?? '',
+                  );
+
+                  this.store.update(annotationId, {
+                    anchor: {
+                      start: Time.min(startTs, endTs),
+                      end: Time.max(startTs, endTs),
+                      trackUris,
+                      trackNames,
+                      topYFrac,
+                      bottomYFrac,
+                    },
+                  });
                 }
               }
-
-              this.store.update(annotationId, {
-                anchor: {
-                  start: Time.min(newStart, newEnd),
-                  end: Time.max(newStart, newEnd),
-                  trackUris: newTrackUris,
-                  trackNames: newTrackNames,
-                },
-              });
             } else if (targetAnnotation.kind === 'label') {
               const origPosition =
                 gesture.initialPosition ?? targetAnnotation.position;
-              const newTs = Time.add(origPosition.ts, deltaTs);
               const origGeom = this.getGeometryForId(
                 annotationId,
                 event.rootNode,
               );
+              const targetX =
+                origGeom !== undefined ? origGeom.bbox.left + deltaX : event.x;
               const targetY =
-                origGeom !== undefined ? origGeom.bbox.top + deltaY : event.y;
+                origGeom !== undefined
+                  ? origGeom.bbox.top + origGeom.bbox.height / 2 + deltaY
+                  : event.y;
+
+              const newTs = event.timescale.pxToHpTime(targetX).toTime();
               const newAnchor =
                 pointAtY(targetY, event.tracks) ??
                 pointAtY(event.y, event.tracks);
@@ -986,6 +1324,7 @@ export class ToolController {
             } else if (targetAnnotation.kind === 'path') {
               const origPoints =
                 gesture.initialPoints ?? targetAnnotation.points;
+              const deltaTs = Time.diff(event.ts, startEvent.ts);
               const newPoints: AnchoredPoint[] = [];
 
               for (const pt of origPoints) {
@@ -1017,6 +1356,63 @@ export class ToolController {
               this.store.update(annotationId, {
                 points: newPoints,
               });
+            } else if (targetAnnotation.kind === 'arrow') {
+              const origGeom = this.getGeometryForId(
+                annotationId,
+                event.rootNode,
+              );
+              if (
+                origGeom !== undefined &&
+                origGeom.start !== undefined &&
+                origGeom.end !== undefined
+              ) {
+                const newStartPx = {
+                  x: origGeom.start.x + deltaX,
+                  y: origGeom.start.y + deltaY,
+                };
+                const newEndPx = {
+                  x: origGeom.end.x + deltaX,
+                  y: origGeom.end.y + deltaY,
+                };
+                const startHit = pointAtY(newStartPx.y, event.tracks);
+                const endHit = pointAtY(newEndPx.y, event.tracks);
+                let newFrom = targetAnnotation.from;
+                let newTo = targetAnnotation.to;
+
+                if (
+                  targetAnnotation.from.kind === 'point' &&
+                  startHit !== undefined
+                ) {
+                  newFrom = {
+                    kind: 'point',
+                    point: {
+                      ts: event.timescale.pxToHpTime(newStartPx.x).toTime(),
+                      trackUri: startHit.trackUri,
+                      trackName: startHit.trackName,
+                      yFrac: startHit.yFrac,
+                    },
+                  };
+                }
+                if (
+                  targetAnnotation.to.kind === 'point' &&
+                  endHit !== undefined
+                ) {
+                  newTo = {
+                    kind: 'point',
+                    point: {
+                      ts: event.timescale.pxToHpTime(newEndPx.x).toTime(),
+                      trackUri: endHit.trackUri,
+                      trackName: endHit.trackName,
+                      yFrac: endHit.yFrac,
+                    },
+                  };
+                }
+
+                this.store.update(annotationId, {
+                  from: newFrom,
+                  to: newTo,
+                });
+              }
             }
           }
         }
@@ -1032,25 +1428,57 @@ export class ToolController {
   private hitTestCurveHandle(
     point: Point2D,
     rootNode?: TrackNode,
-  ): AnnotationGeometry | undefined {
+  ):
+    | {
+        geom: AnnotationGeometry;
+        handleId: 'arrow-control-1' | 'arrow-control-2' | 'arrow-midpoint';
+      }
+    | undefined {
+    const checkCandidate = (
+      geom: AnnotationGeometry,
+    ):
+      | {
+          geom: AnnotationGeometry;
+          handleId: 'arrow-control-1' | 'arrow-control-2' | 'arrow-midpoint';
+        }
+      | undefined => {
+      if (
+        geom.kind !== 'arrow' ||
+        geom.start === undefined ||
+        geom.end === undefined
+      ) {
+        return undefined;
+      }
+
+      if (geom.controlPoints && geom.controlPoints.length === 2) {
+        const [cp1, cp2] = geom.controlPoints;
+        if (Math.hypot(point.x - cp1.x, point.y - cp1.y) <= 10) {
+          return {geom, handleId: 'arrow-control-1'};
+        }
+        if (Math.hypot(point.x - cp2.x, point.y - cp2.y) <= 10) {
+          return {geom, handleId: 'arrow-control-2'};
+        }
+      }
+
+      const midpoint = geom.curveMidpoint ?? {
+        x: (geom.start.x + geom.end.x) / 2,
+        y: (geom.start.y + geom.end.y) / 2,
+      };
+      if (Math.hypot(point.x - midpoint.x, point.y - midpoint.y) <= 8) {
+        return {geom, handleId: 'arrow-midpoint'};
+      }
+
+      return undefined;
+    };
+
     if (this.store.selectedId !== undefined) {
       const selectedGeom = this.getGeometryForId(
         this.store.selectedId,
         rootNode,
       );
-      if (
-        selectedGeom &&
-        selectedGeom.kind === 'arrow' &&
-        selectedGeom.start &&
-        selectedGeom.end
-      ) {
-        const handle = selectedGeom.curveMidpoint ?? {
-          x: (selectedGeom.start.x + selectedGeom.end.x) / 2,
-          y: (selectedGeom.start.y + selectedGeom.end.y) / 2,
-        };
-        if (Math.hypot(point.x - handle.x, point.y - handle.y) <= 8) {
-          return selectedGeom;
-        }
+      if (selectedGeom) {
+        const hit = checkCandidate(selectedGeom);
+        if (hit) return hit;
       }
     }
 
@@ -1060,20 +1488,10 @@ export class ToolController {
       if (this.store.isHidden(geometry.id)) {
         continue;
       }
-      if (
-        geometry.kind === 'arrow' &&
-        geometry.start !== undefined &&
-        geometry.end !== undefined
-      ) {
-        const handle = geometry.curveMidpoint ?? {
-          x: (geometry.start.x + geometry.end.x) / 2,
-          y: (geometry.start.y + geometry.end.y) / 2,
-        };
-        if (Math.hypot(point.x - handle.x, point.y - handle.y) <= 8) {
-          return geometry;
-        }
-      }
+      const hit = checkCandidate(geometry);
+      if (hit) return hit;
     }
+
     return undefined;
   }
 
@@ -1112,7 +1530,16 @@ export class ToolController {
         geometry.start !== undefined &&
         geometry.end !== undefined
       ) {
-        if (geometry.control !== undefined) {
+        if (geometry.controlPoints && geometry.controlPoints.length === 2) {
+          isHit = hitTestCubicBezier(
+            point,
+            geometry.start,
+            geometry.controlPoints[0],
+            geometry.controlPoints[1],
+            geometry.end,
+            HIT_TEST_TOLERANCE_PX,
+          );
+        } else if (geometry.control !== undefined) {
           isHit = hitTestQuadraticBezier(
             point,
             geometry.start,

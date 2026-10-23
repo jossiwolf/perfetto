@@ -14,7 +14,10 @@
 
 import {describe, expect, test} from 'vitest';
 import {
+  LabelFontFamilySchema,
   SERIALIZED_ANNOTATIONS_VERSION,
+  SerializedAreaAnchorSchema,
+  SerializedArrowAnnotationSchema,
   SerializedTimestampSchema,
   parseSerializedAnnotations,
 } from './schema';
@@ -349,7 +352,23 @@ describe('schema.ts', () => {
       );
     });
 
-    test('parses label text styles: fontFamily, fontSize, textColor, backgroundColor', () => {
+    test('parses label text styles and named fontFamily: Roboto, Google Sans, Inter, Georgia, etc.', () => {
+      const fonts = [
+        'Roboto',
+        'Roboto Condensed',
+        'Roboto Mono',
+        'Google Sans',
+        'Inter',
+        'Georgia',
+        'sans-serif',
+        'monospace',
+        'serif',
+      ] as const;
+
+      for (const font of fonts) {
+        expect(LabelFontFamilySchema.parse(font)).toBe(font);
+      }
+
       const raw = {
         version: 1,
         annotations: [
@@ -360,7 +379,7 @@ describe('schema.ts', () => {
             createdAt: 10,
             updatedAt: 20,
             text: 'styled label',
-            fontFamily: 'monospace',
+            fontFamily: 'Google Sans',
             fontSize: 16,
             textColor: '#ffffff',
             backgroundColor: '#000000',
@@ -375,7 +394,7 @@ describe('schema.ts', () => {
       const parsed = parseSerializedAnnotations(raw);
       const label = parsed.annotations[0];
       if (label.kind !== 'label') throw new Error('Expected label');
-      expect(label.fontFamily).toBe('monospace');
+      expect(label.fontFamily).toBe('Google Sans');
       expect(label.fontSize).toBe(16);
       expect(label.textColor).toBe('#ffffff');
       expect(label.backgroundColor).toBe('#000000');
@@ -437,7 +456,59 @@ describe('schema.ts', () => {
       ).toThrow(/fontSize/);
     });
 
-    test('parses arrow curvature and controlOffset', () => {
+    test('parses fractional vertical bounds topYFrac and bottomYFrac on AreaAnchor', () => {
+      const anchorWithFrac = {
+        start: '100',
+        end: '500',
+        trackUris: ['cpu_0'],
+        topYFrac: 0.25,
+        bottomYFrac: 0.75,
+      };
+      const parsed = SerializedAreaAnchorSchema.parse(anchorWithFrac);
+      expect(parsed.topYFrac).toBe(0.25);
+      expect(parsed.bottomYFrac).toBe(0.75);
+
+      const raw = {
+        version: 1,
+        annotations: [
+          {
+            id: 'rect-frac',
+            kind: 'rect',
+            color: '#ff0000',
+            createdAt: 100,
+            updatedAt: 200,
+            anchor: anchorWithFrac,
+          },
+        ],
+      };
+      const parsedAnnotations = parseSerializedAnnotations(raw);
+      const rect = parsedAnnotations.annotations[0];
+      if (rect.kind !== 'rect') throw new Error('Expected rect');
+      expect(rect.anchor.topYFrac).toBe(0.25);
+      expect(rect.anchor.bottomYFrac).toBe(0.75);
+    });
+
+    test('rejects topYFrac and bottomYFrac outside [0, 1]', () => {
+      expect(() =>
+        SerializedAreaAnchorSchema.parse({
+          start: '0',
+          end: '10',
+          trackUris: ['t'],
+          topYFrac: -0.1,
+        }),
+      ).toThrow();
+
+      expect(() =>
+        SerializedAreaAnchorSchema.parse({
+          start: '0',
+          end: '10',
+          trackUris: ['t'],
+          bottomYFrac: 1.1,
+        }),
+      ).toThrow();
+    });
+
+    test('parses arrow curvature, legacy controlOffset, and 2-control-point controlOffsets', () => {
       const raw = {
         version: 1,
         annotations: [
@@ -452,6 +523,10 @@ describe('schema.ts', () => {
               alongFrac: 0.4,
               normalPx: 75,
             },
+            controlOffsets: [
+              {alongFrac: 0.3, normalPx: -40},
+              {alongFrac: 0.7, normalPx: 60},
+            ],
             from: {
               kind: 'point',
               point: {ts: '0', trackUri: 't', yFrac: 0.5},
@@ -468,6 +543,10 @@ describe('schema.ts', () => {
       if (arrow.kind !== 'arrow') throw new Error('Expected arrow');
       expect(arrow.curvature).toBe(-150);
       expect(arrow.controlOffset).toEqual({alongFrac: 0.4, normalPx: 75});
+      expect(arrow.controlOffsets).toEqual([
+        {alongFrac: 0.3, normalPx: -40},
+        {alongFrac: 0.7, normalPx: 60},
+      ]);
     });
 
     test('rejects arrow curvature and controlOffset out of bounds', () => {
@@ -518,6 +597,19 @@ describe('schema.ts', () => {
           ],
         }),
       ).toThrow(/controlOffset/);
+
+      expect(() =>
+        SerializedArrowAnnotationSchema.parse({
+          id: 'a3',
+          kind: 'arrow',
+          color: '#000',
+          createdAt: 1,
+          updatedAt: 1,
+          from: {kind: 'point', point: {ts: '0', trackUri: 't', yFrac: 0.5}},
+          to: {kind: 'point', point: {ts: '100', trackUri: 't', yFrac: 0.5}},
+          controlOffsets: [{alongFrac: -0.5, normalPx: 0}], // requires 2 elements
+        }),
+      ).toThrow();
     });
   });
 });

@@ -128,10 +128,20 @@ export function clampArrowControlOffset(
     readonly dxFrac?: number;
     readonly dyPx?: number;
   };
-  const along = o.alongFrac ?? o.dxFrac ?? 0.5;
-  const normal = o.normalPx ?? o.dyPx ?? 0;
+  if (o.dxFrac !== undefined || o.dyPx !== undefined) {
+    const dx = Math.max(-2, Math.min(2, o.dxFrac ?? 0));
+    const dy = Math.max(-1000, Math.min(1000, o.dyPx ?? 0));
+    return {
+      alongFrac: dx,
+      normalPx: dy,
+      dxFrac: dx,
+      dyPx: dy,
+    } as ArrowControlOffset;
+  }
+  const along = o.alongFrac ?? 0;
+  const normal = o.normalPx ?? 0;
   return {
-    alongFrac: Math.max(0, Math.min(1, along)),
+    alongFrac: Math.max(-2, Math.min(2, along)),
     normalPx: Math.max(-1000, Math.min(1000, normal)),
   };
 }

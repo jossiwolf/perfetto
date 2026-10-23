@@ -48,10 +48,15 @@ export function localComputeCubicBaseControlPoints(
 ): [Point2D, Point2D] {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  return [
-    {x: start.x + dx / 3, y: start.y + dy / 3},
-    {x: start.x + (2 * dx) / 3, y: start.y + (2 * dy) / 3},
-  ];
+  if (Math.abs(dx) >= 24) {
+    const base1 = {x: start.x + dx * 0.38, y: start.y + dy * 0.08};
+    const base2 = {x: end.x - dx * 0.38, y: end.y - dy * 0.08};
+    return [base1, base2];
+  } else {
+    const base1 = {x: start.x + dx * 0.33, y: start.y + dy * 0.33};
+    const base2 = {x: start.x + dx * 0.67, y: start.y + dy * 0.67};
+    return [base1, base2];
+  }
 }
 
 export function localComputeCubicControlPoints(
@@ -645,7 +650,10 @@ export class ToolController {
         if (hitAnnotation !== undefined) {
           arrowFrom = {kind: 'annotation', id: hitAnnotation.id};
         } else {
-          const anchorAtPointer = pointAtY(event.y, event.tracks);
+          const availableTracks = event.tracks.filter(
+            (t) => t.node.uri !== '/timeline_annotations',
+          );
+          const anchorAtPointer = pointAtY(event.y, availableTracks);
           if (anchorAtPointer !== undefined) {
             arrowFrom = {
               kind: 'point',
@@ -952,7 +960,10 @@ export class ToolController {
             width: xMax - xMin,
             height: yMax - yMin,
           };
-          const trackUris = areaForTrackRange(yMin, yMax, event.tracks);
+          const availableTracks = event.tracks.filter(
+            (t) => t.node.uri !== '/timeline_annotations',
+          );
+          const trackUris = areaForTrackRange(yMin, yMax, availableTracks);
           const trackNames = trackUris.map(
             (uri) =>
               event.tracks.find((track) => track.node.uri === uri)?.node.name ??
@@ -1004,10 +1015,13 @@ export class ToolController {
                 .toTime();
               const startTs = Time.min(tsLeft, tsRight);
               const endTs = Time.max(tsLeft, tsRight);
+              const availableTracks = event.tracks.filter(
+                (t) => t.node.uri !== '/timeline_annotations',
+              );
               const trackUris = areaForTrackRange(
                 recognized.bbox.top,
                 recognized.bbox.bottom,
-                event.tracks,
+                availableTracks,
               );
               const trackNames = trackUris.map(
                 (uri) =>
@@ -1127,7 +1141,10 @@ export class ToolController {
         if (hitTargetUp !== undefined) {
           arrowTo = {kind: 'annotation', id: hitTargetUp.id};
         } else {
-          const anchorAtPointer = pointAtY(event.y, event.tracks);
+          const availableTracks = event.tracks.filter(
+            (t) => t.node.uri !== '/timeline_annotations',
+          );
+          const anchorAtPointer = pointAtY(event.y, availableTracks);
           if (anchorAtPointer !== undefined) {
             arrowTo = {
               kind: 'point',
@@ -1177,7 +1194,10 @@ export class ToolController {
       }
       case 'label': {
         if (distanceMoved < MIN_DRAG_DISTANCE_PX) {
-          const anchorAtPointer = pointAtY(event.y, event.tracks);
+          const availableTracks = event.tracks.filter(
+            (t) => t.node.uri !== '/timeline_annotations',
+          );
+          const anchorAtPointer = pointAtY(event.y, availableTracks);
           if (anchorAtPointer !== undefined) {
             const created = this.store.add({
               kind: 'label',
@@ -1236,6 +1256,7 @@ export class ToolController {
 
                 const intersectingTracks: TrackBounds[] = [];
                 for (const track of event.tracks) {
+                  if (track.node.uri === '/timeline_annotations') continue;
                   if (
                     newBottom > newTop
                       ? track.verticalBounds.bottom > newTop &&

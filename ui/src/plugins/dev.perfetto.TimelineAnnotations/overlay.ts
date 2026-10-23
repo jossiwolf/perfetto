@@ -86,10 +86,15 @@ export function localComputeCubicBaseControlPoints(
 ): [Point2D, Point2D] {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
-  return [
-    {x: start.x + dx / 3, y: start.y + dy / 3},
-    {x: start.x + (2 * dx) / 3, y: start.y + (2 * dy) / 3},
-  ];
+  if (Math.abs(dx) >= 24) {
+    const base1 = {x: start.x + dx * 0.38, y: start.y + dy * 0.08};
+    const base2 = {x: end.x - dx * 0.38, y: end.y - dy * 0.08};
+    return [base1, base2];
+  } else {
+    const base1 = {x: start.x + dx * 0.33, y: start.y + dy * 0.33};
+    const base2 = {x: start.x + dx * 0.67, y: start.y + dy * 0.67};
+    return [base1, base2];
+  }
 }
 
 export function localComputeCubicControlPoints(
@@ -400,14 +405,34 @@ function renderTitlePill(
   let pillY: number;
 
   if (target.kind === 'rect-or-ellipse') {
-    pillX = target.bbox.left + 4;
-    pillY = target.bbox.top >= 23 ? target.bbox.top - 21 : target.bbox.top + 4;
+    if (target.bbox.height >= 24) {
+      pillX = target.bbox.left + 6;
+      pillY = target.bbox.top + 5;
+    } else {
+      pillX = target.bbox.left + 4;
+      const anchorY = target.bbox.top;
+      if (anchorY - pillH < 34) {
+        pillY = Math.min(target.bbox.bottom + 4, anchorY + 8);
+      } else {
+        pillY = target.bbox.top - 21;
+      }
+    }
   } else if (target.kind === 'path') {
     pillX = target.point.x + 4;
-    pillY = Math.max(2, target.point.y - 21);
+    const anchorY = target.point.y;
+    if (anchorY - pillH < 34) {
+      pillY = anchorY + 8;
+    } else {
+      pillY = Math.max(2, target.point.y - 21);
+    }
   } else {
     pillX = target.midpoint.x - pillW / 2;
-    pillY = Math.max(2, target.midpoint.y - pillH - 6);
+    const anchorY = target.midpoint.y;
+    if (anchorY - pillH < 34) {
+      pillY = anchorY + 8;
+    } else {
+      pillY = Math.max(2, target.midpoint.y - pillH - 6);
+    }
   }
 
   drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 5);
@@ -1391,18 +1416,46 @@ export class AnnotationsOverlay implements Overlay {
               if (annotation.backgroundColor === 'transparent') {
                 // transparent: do not fill
               } else if (annotation.backgroundColor !== undefined) {
+                ctx.fillStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.92);
+                ctx.fill();
                 ctx.fillStyle = colorWithAlpha(
                   annotation.backgroundColor,
                   annotation.fillOpacity ?? 0.85,
                 );
                 ctx.fill();
-              } else {
+              } else if (annotation.fillColor !== 'transparent') {
+                ctx.fillStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.92);
+                ctx.fill();
                 ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
                 ctx.fill();
               }
 
+              // Contrast halo / casing
+              drawRoundedRect(
+                ctx,
+                geometry.bbox.left,
+                geometry.bbox.top,
+                geometry.bbox.width,
+                geometry.bbox.height,
+                6,
+              );
+              ctx.lineWidth = 3;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+              ctx.setLineDash([]);
+              ctx.stroke();
+
+              // Primary stroke
+              drawRoundedRect(
+                ctx,
+                geometry.bbox.left,
+                geometry.bbox.top,
+                geometry.bbox.width,
+                geometry.bbox.height,
+                6,
+              );
               ctx.lineWidth = 1;
               ctx.strokeStyle = annotation.color;
+              ctx.setLineDash([]);
               ctx.stroke();
 
               ctx.fillStyle = annotation.textColor ?? theme.COLOR_TEXT;

@@ -1306,6 +1306,7 @@ export class AnnotationsTab implements Tab {
 
     return m(
       '.pf-timeline-annotations-label-toolbar',
+      m('span.pf-timeline-annotations__label', 'Font'),
       m(
         'select.pf-timeline-annotations-select.pf-timeline-annotations-font-select',
         {
@@ -1323,6 +1324,7 @@ export class AnnotationsTab implements Tab {
           m('option', {value: opt.value}, opt.label),
         ),
       ),
+      m('span.pf-timeline-annotations__label', 'Size'),
       m(
         'select.pf-timeline-annotations-select.pf-timeline-annotations-size-select',
         {
@@ -1338,7 +1340,6 @@ export class AnnotationsTab implements Tab {
         },
         LABEL_FONT_SIZES.map((size) => m('option', {value: size}, `${size}px`)),
       ),
-      this.renderItemColorDropdown(annotation),
     );
   }
 
@@ -1377,9 +1378,7 @@ export class AnnotationsTab implements Tab {
       headerChildren.push(badge);
     }
 
-    if (annotation.kind !== 'label') {
-      headerChildren.push(this.renderItemColorDropdown(annotation));
-    }
+    headerChildren.push(this.renderItemColorDropdown(annotation));
 
     headerChildren.push(
       m(

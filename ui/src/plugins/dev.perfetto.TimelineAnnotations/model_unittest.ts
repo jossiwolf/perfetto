@@ -464,22 +464,27 @@ describe('model.ts', () => {
   describe('Cubic Bézier arrow controlOffsets and clampArrowControlOffset', () => {
     test('clampArrowControlOffset bounds alongFrac and normalPx', () => {
       const clampedLow = clampArrowControlOffset({
-        alongFrac: -0.5,
+        alongFrac: -2.5,
         normalPx: -1500,
       });
-      expect(clampedLow).toEqual({alongFrac: 0, normalPx: -1000});
+      expect(clampedLow).toEqual({alongFrac: -2, normalPx: -1000});
 
       const clampedHigh = clampArrowControlOffset({
-        alongFrac: 1.5,
+        alongFrac: 2.5,
         normalPx: 2000,
       });
-      expect(clampedHigh).toEqual({alongFrac: 1, normalPx: 1000});
+      expect(clampedHigh).toEqual({alongFrac: 2, normalPx: 1000});
 
       const clampedLegacy = clampArrowControlOffset({
         dxFrac: 0.7,
         dyPx: 50,
       });
-      expect(clampedLegacy).toEqual({alongFrac: 0.7, normalPx: 50});
+      expect(clampedLegacy).toEqual({
+        alongFrac: 0.7,
+        normalPx: 50,
+        dxFrac: 0.7,
+        dyPx: 50,
+      });
     });
 
     test('createAnnotation clamps controlOffsets on arrow', () => {
@@ -495,14 +500,14 @@ describe('model.ts', () => {
           point: {ts: Time.fromRaw(100n), trackUri: 't', yFrac: 0.5},
         },
         controlOffsets: [
-          {alongFrac: -0.2, normalPx: 200},
-          {alongFrac: 1.8, normalPx: -2000},
+          {alongFrac: -2.5, normalPx: 200},
+          {alongFrac: 2.5, normalPx: -2000},
         ],
       });
       if (arrow.kind !== 'arrow') throw new Error('Expected arrow');
       expect(arrow.controlOffsets).toEqual([
-        {alongFrac: 0, normalPx: 200},
-        {alongFrac: 1, normalPx: -1000},
+        {alongFrac: -2, normalPx: 200},
+        {alongFrac: 2, normalPx: -1000},
       ]);
     });
 
@@ -557,14 +562,14 @@ describe('model.ts', () => {
           point: {ts: Time.fromRaw(100n), trackUri: 't', yFrac: 0.5},
         },
         controlOffsets: [
-          {alongFrac: -0.1, normalPx: 50},
-          {alongFrac: 1.1, normalPx: -50},
+          {alongFrac: -2.5, normalPx: 50},
+          {alongFrac: 2.5, normalPx: -50},
         ],
       });
       if (added.kind !== 'arrow') throw new Error('Expected arrow');
       expect(added.controlOffsets).toEqual([
-        {alongFrac: 0, normalPx: 50},
-        {alongFrac: 1, normalPx: -50},
+        {alongFrac: -2, normalPx: 50},
+        {alongFrac: 2, normalPx: -50},
       ]);
 
       const updated = store.update(added.id, {

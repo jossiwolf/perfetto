@@ -377,6 +377,7 @@
   }
 
   &--custom {
+    box-shadow: none;
     background: conic-gradient(
       from 180deg,
       #e53935,
@@ -644,12 +645,17 @@
   box-sizing: border-box;
 
   .pf-timeline-annotations-select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding: 0 22px 0 8px;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='%23666'><path d='M7 10l5 5 5-5z'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 5px center;
     height: 24px;
     font-size: 11px;
-    padding: 0 4px;
     border-radius: 4px;
     border: 1px solid var(--pf-color-border, #cccccc);
-    background: var(--pf-color-background, #ffffff);
+    background-color: var(--pf-color-background, #ffffff);
     color: var(--pf-color-text, inherit);
     cursor: pointer;
     box-sizing: border-box;
@@ -697,7 +703,7 @@
   &--closing,
   &.pf-timeline-annotations-modal-backdrop--closing {
     animation: pf-annotations-backdrop-fade-out 130ms var(--pf-anim-exit)
-      forwards;
+      forwards !important;
     pointer-events: none;
   }
 }
@@ -720,7 +726,7 @@
 
   &--closing,
   &.pf-timeline-annotations-modal--closing {
-    animation: pf-annotations-modal-scale-out 130ms var(--pf-anim-exit) forwards;
+    animation: pf-annotations-modal-scale-out 130ms var(--pf-anim-exit) forwards !important;
     pointer-events: none;
   }
 
@@ -756,6 +762,16 @@
     justify-content: flex-end;
     width: 100%;
     margin-top: 4px;
+
+    .pf-button:not(.pf-timeline-annotations-modal__confirm-btn) {
+      border: 1px solid var(--pf-color-border);
+      border-radius: 6px;
+      padding: 6px 14px;
+    }
+
+    .pf-timeline-annotations-modal__confirm-btn {
+      padding: 6px 14px;
+    }
   }
 }
 
@@ -774,8 +790,14 @@
   &.pf-timeline-annotations-popup--closing,
   &.pf-timeline-annotations__style-popup--closing,
   &.pf-timeline-annotations__kind-popup--closing {
-    animation: pf-annotations-popup-exit 85ms var(--pf-anim-exit) forwards;
+    animation: pf-annotations-popup-exit 85ms var(--pf-anim-exit) forwards !important;
     pointer-events: none;
+  }
+}
+
+.pf-timeline-annotations__toolbar {
+  .pf-button i.pf-icon {
+    font-size: 16px;
   }
 }
 
@@ -824,8 +846,8 @@
 .pf-timeline-annotations-slider-row {
   margin-top: 10px;
   padding-top: 8px;
-  border-top: 1px dashed
-    color-mix(in srgb, var(--pf-color-border) 60%, transparent);
+  border-top: 1px solid
+    color-mix(in srgb, var(--pf-color-border) 65%, transparent);
   display: flex;
   align-items: center;
   gap: 8px;

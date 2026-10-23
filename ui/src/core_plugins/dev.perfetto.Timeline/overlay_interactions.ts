@@ -22,6 +22,7 @@ import type {
 } from '../../base/zoned_interaction_handler';
 import type {
   Overlay,
+  OverlayInteractionContext,
   OverlayPointerEvent,
   TrackBounds,
 } from '../../public/track';
@@ -77,6 +78,57 @@ function getCursorForOverlays(overlays: ReadonlyArray<Overlay>): CSSCursor {
   return 'crosshair';
 }
 
+function buildOverlayPointerEvent(
+  pos: Point2D,
+  event: unknown,
+  defaultButtons: number,
+  timescale: TimeScale,
+  tracks: ReadonlyArray<TrackBounds>,
+  rootNode: TrackNode,
+): OverlayPointerEvent {
+  const posX = pos.x;
+  const posY = pos.y;
+  const ts = timescale.pxToHpTime(posX).toTime();
+  const track = findTrackAtY(tracks, posY);
+
+  const shiftKey = Boolean(
+    typeof event === 'object' &&
+    event !== null &&
+    (event as {shiftKey?: boolean}).shiftKey,
+  );
+  const altKey = Boolean(
+    typeof event === 'object' &&
+    event !== null &&
+    (event as {altKey?: boolean}).altKey,
+  );
+  const ctrlKey = Boolean(
+    typeof event === 'object' &&
+    event !== null &&
+    (event as {ctrlKey?: boolean}).ctrlKey,
+  );
+  const metaKey = Boolean(
+    typeof event === 'object' &&
+    event !== null &&
+    (event as {metaKey?: boolean}).metaKey,
+  );
+  const buttons = getButtons(event, defaultButtons);
+
+  return {
+    x: posX,
+    y: posY,
+    ts,
+    track,
+    tracks,
+    timescale,
+    rootNode,
+    buttons,
+    shiftKey,
+    altKey,
+    ctrlKey,
+    metaKey,
+  };
+}
+
 /**
  * Creates an interaction Zone for interactive overlays.
  *
@@ -92,7 +144,9 @@ export function createOverlayInteractionZone(
 ): Zone | undefined {
   const {overlays, timelineRect, timescale, tracks, rootNode} = args;
 
-  const hasInteractive = overlays.some((o) => o.isInteractive?.() === true);
+  const hasInteractive = overlays.some(
+    (overlay) => overlay.isInteractive?.() === true,
+  );
   if (!hasInteractive) {
     return undefined;
   }
@@ -100,50 +154,8 @@ export function createOverlayInteractionZone(
   const gesture = args.gesture ?? {active: false};
   const cursor = getCursorForOverlays(overlays);
 
-  function buildEvent(
-    pos: Point2D,
-    e: unknown,
-    defaultButtons: number,
-  ): OverlayPointerEvent {
-    const x = pos.x;
-    const y = pos.y;
-    const ts = timescale.pxToHpTime(x).toTime();
-    const track = findTrackAtY(tracks, y);
-
-    const shiftKey = Boolean(
-      typeof e === 'object' &&
-      e !== null &&
-      (e as {shiftKey?: boolean}).shiftKey,
-    );
-    const altKey = Boolean(
-      typeof e === 'object' && e !== null && (e as {altKey?: boolean}).altKey,
-    );
-    const ctrlKey = Boolean(
-      typeof e === 'object' && e !== null && (e as {ctrlKey?: boolean}).ctrlKey,
-    );
-    const metaKey = Boolean(
-      typeof e === 'object' && e !== null && (e as {metaKey?: boolean}).metaKey,
-    );
-    const buttons = getButtons(e, defaultButtons);
-
-    return {
-      x,
-      y,
-      ts,
-      track,
-      tracks,
-      timescale,
-      rootNode,
-      buttons,
-      shiftKey,
-      altKey,
-      ctrlKey,
-      metaKey,
-    };
-  }
-
   function emitPointerDown(pos: Point2D, e: unknown): void {
-    const ev = buildEvent(pos, e, 1);
+    const ev = buildOverlayPointerEvent(pos, e, 1, timescale, tracks, rootNode);
     for (const overlay of overlays) {
       if (overlay.isInteractive?.() === true) {
         overlay.onPointerDown?.(ev);
@@ -152,7 +164,7 @@ export function createOverlayInteractionZone(
   }
 
   function emitPointerMove(pos: Point2D, e: unknown): void {
-    const ev = buildEvent(pos, e, 1);
+    const ev = buildOverlayPointerEvent(pos, e, 1, timescale, tracks, rootNode);
     for (const overlay of overlays) {
       if (overlay.isInteractive?.() === true) {
         overlay.onPointerMove?.(ev);
@@ -161,7 +173,7 @@ export function createOverlayInteractionZone(
   }
 
   function emitPointerUp(pos: Point2D, e: unknown): void {
-    const ev = buildEvent(pos, e, 0);
+    const ev = buildOverlayPointerEvent(pos, e, 0, timescale, tracks, rootNode);
     for (const overlay of overlays) {
       if (overlay.isInteractive?.() === true) {
         overlay.onPointerUp?.(ev);
@@ -205,4 +217,138 @@ export function createOverlayInteractionZone(
       gesture.active = false;
     },
   };
+}
+
+/**
+ * Creates interaction Zones for overlays.
+ *
+ * Collects fine-grained interaction zones returned by overlays via
+ * getInteractionZones(), and if any overlay has isInteractive() === true,
+ * also includes the full-canvas interaction zone. Fine-grained zones
+ * precede the full-canvas zone so their cursors and hit detection take priority.
+ */
+export function createOverlayInteractionZones(
+  args: OverlayInteractionZoneArgs,
+): ReadonlyArray<Zone> {
+  const {overlays, timelineRect, timescale, tracks, rootNode} = args;
+  const gesture = args.gesture ?? {active: false};
+  const context: OverlayInteractionContext = {
+    timelineRect,
+    timescale,
+    tracks,
+    rootNode,
+  };
+
+  const fineGrainedZones: Zone[] = [];
+  for (const overlay of overlays) {
+    const interactionZones = overlay.getInteractionZones?.(context);
+    if (interactionZones) {
+      for (const zoneSpec of interactionZones) {
+        const zoneCursor: CSSCursor = (zoneSpec.cursor ??
+          'pointer') as CSSCursor;
+        fineGrainedZones.push({
+          id: `overlay-zone:${zoneSpec.id}`,
+          area: zoneSpec.area,
+          cursor: zoneCursor,
+          drag: {
+            minDistance: 0,
+            cursorWhileDragging: zoneCursor,
+            onDragStart: (e: DragEvent) => {
+              if (!gesture.active) {
+                const ev = buildOverlayPointerEvent(
+                  e.dragStart,
+                  e,
+                  1,
+                  timescale,
+                  tracks,
+                  rootNode,
+                );
+                overlay.onPointerDown?.(ev);
+                gesture.active = true;
+              }
+            },
+            onDrag: (e: DragEvent) => {
+              if (!gesture.active) {
+                const ev = buildOverlayPointerEvent(
+                  e.dragStart,
+                  e,
+                  1,
+                  timescale,
+                  tracks,
+                  rootNode,
+                );
+                overlay.onPointerDown?.(ev);
+                gesture.active = true;
+              }
+              const ev = buildOverlayPointerEvent(
+                e.dragCurrent,
+                e,
+                1,
+                timescale,
+                tracks,
+                rootNode,
+              );
+              overlay.onPointerMove?.(ev);
+            },
+            onDragEnd: (e: DragEvent) => {
+              if (!gesture.active) {
+                const ev = buildOverlayPointerEvent(
+                  e.dragStart,
+                  e,
+                  1,
+                  timescale,
+                  tracks,
+                  rootNode,
+                );
+                overlay.onPointerDown?.(ev);
+              }
+              const ev = buildOverlayPointerEvent(
+                e.dragCurrent,
+                e,
+                0,
+                timescale,
+                tracks,
+                rootNode,
+              );
+              overlay.onPointerUp?.(ev);
+              gesture.active = false;
+            },
+          },
+          onClick: (e: ClickEvent) => {
+            if (!gesture.active) {
+              const evDown = buildOverlayPointerEvent(
+                e.position,
+                e,
+                1,
+                timescale,
+                tracks,
+                rootNode,
+              );
+              overlay.onPointerDown?.(evDown);
+            }
+            const evUp = buildOverlayPointerEvent(
+              e.position,
+              e,
+              0,
+              timescale,
+              tracks,
+              rootNode,
+            );
+            overlay.onPointerUp?.(evUp);
+            gesture.active = false;
+          },
+        });
+      }
+    }
+  }
+
+  const fullCanvasZone = createOverlayInteractionZone({
+    ...args,
+    gesture,
+  });
+
+  if (fullCanvasZone !== undefined) {
+    return [...fineGrainedZones, fullCanvasZone];
+  }
+  return fineGrainedZones;
 }

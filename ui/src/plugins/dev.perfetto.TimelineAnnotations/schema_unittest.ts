@@ -284,4 +284,240 @@ describe('schema.ts', () => {
       ).toThrow();
     });
   });
+
+  describe('extended schema fields', () => {
+    test('parses fillColor and fillOpacity on base annotations', () => {
+      const raw = {
+        version: 1,
+        annotations: [
+          {
+            id: 'rect-fill',
+            kind: 'rect',
+            color: '#ff0000',
+            fillColor: '#00ff00',
+            fillOpacity: 0.35,
+            createdAt: 100,
+            updatedAt: 200,
+            anchor: {
+              start: '10',
+              end: '20',
+              trackUris: ['t1'],
+            },
+          },
+        ],
+      };
+      const parsed = parseSerializedAnnotations(raw);
+      expect(parsed.annotations[0].fillColor).toBe('#00ff00');
+      expect(parsed.annotations[0].fillOpacity).toBe(0.35);
+    });
+
+    test('rejects invalid fillOpacity out of [0, 1] range', () => {
+      const invalidLow = {
+        version: 1,
+        annotations: [
+          {
+            id: 'r1',
+            kind: 'rect',
+            color: '#000',
+            fillOpacity: -0.1,
+            createdAt: 1,
+            updatedAt: 2,
+            anchor: {start: '0', end: '10', trackUris: ['t']},
+          },
+        ],
+      };
+      expect(() => parseSerializedAnnotations(invalidLow)).toThrow(
+        /fillOpacity/,
+      );
+
+      const invalidHigh = {
+        version: 1,
+        annotations: [
+          {
+            id: 'r2',
+            kind: 'rect',
+            color: '#000',
+            fillOpacity: 1.1,
+            createdAt: 1,
+            updatedAt: 2,
+            anchor: {start: '0', end: '10', trackUris: ['t']},
+          },
+        ],
+      };
+      expect(() => parseSerializedAnnotations(invalidHigh)).toThrow(
+        /fillOpacity/,
+      );
+    });
+
+    test('parses label text styles: fontFamily, fontSize, textColor, backgroundColor', () => {
+      const raw = {
+        version: 1,
+        annotations: [
+          {
+            id: 'label-styled',
+            kind: 'label',
+            color: '#123456',
+            createdAt: 10,
+            updatedAt: 20,
+            text: 'styled label',
+            fontFamily: 'monospace',
+            fontSize: 16,
+            textColor: '#ffffff',
+            backgroundColor: '#000000',
+            position: {
+              ts: '100',
+              trackUri: 't',
+              yFrac: 0.5,
+            },
+          },
+        ],
+      };
+      const parsed = parseSerializedAnnotations(raw);
+      const label = parsed.annotations[0];
+      if (label.kind !== 'label') throw new Error('Expected label');
+      expect(label.fontFamily).toBe('monospace');
+      expect(label.fontSize).toBe(16);
+      expect(label.textColor).toBe('#ffffff');
+      expect(label.backgroundColor).toBe('#000000');
+    });
+
+    test('rejects invalid fontFamily and out-of-range fontSize', () => {
+      expect(() =>
+        parseSerializedAnnotations({
+          version: 1,
+          annotations: [
+            {
+              id: 'l1',
+              kind: 'label',
+              color: '#000',
+              createdAt: 1,
+              updatedAt: 1,
+              text: 'bad font',
+              fontFamily: 'comic-sans',
+              position: {ts: '0', trackUri: 't', yFrac: 0.5},
+            },
+          ],
+        }),
+      ).toThrow(/fontFamily/);
+
+      expect(() =>
+        parseSerializedAnnotations({
+          version: 1,
+          annotations: [
+            {
+              id: 'l2',
+              kind: 'label',
+              color: '#000',
+              createdAt: 1,
+              updatedAt: 1,
+              text: 'too small',
+              fontSize: 7,
+              position: {ts: '0', trackUri: 't', yFrac: 0.5},
+            },
+          ],
+        }),
+      ).toThrow(/fontSize/);
+
+      expect(() =>
+        parseSerializedAnnotations({
+          version: 1,
+          annotations: [
+            {
+              id: 'l3',
+              kind: 'label',
+              color: '#000',
+              createdAt: 1,
+              updatedAt: 1,
+              text: 'too big',
+              fontSize: 73,
+              position: {ts: '0', trackUri: 't', yFrac: 0.5},
+            },
+          ],
+        }),
+      ).toThrow(/fontSize/);
+    });
+
+    test('parses arrow curvature and controlOffset', () => {
+      const raw = {
+        version: 1,
+        annotations: [
+          {
+            id: 'arrow-curved',
+            kind: 'arrow',
+            color: '#111',
+            createdAt: 1,
+            updatedAt: 1,
+            curvature: -150,
+            controlOffset: {
+              alongFrac: 0.4,
+              normalPx: 75,
+            },
+            from: {
+              kind: 'point',
+              point: {ts: '0', trackUri: 't', yFrac: 0.5},
+            },
+            to: {
+              kind: 'point',
+              point: {ts: '100', trackUri: 't', yFrac: 0.5},
+            },
+          },
+        ],
+      };
+      const parsed = parseSerializedAnnotations(raw);
+      const arrow = parsed.annotations[0];
+      if (arrow.kind !== 'arrow') throw new Error('Expected arrow');
+      expect(arrow.curvature).toBe(-150);
+      expect(arrow.controlOffset).toEqual({alongFrac: 0.4, normalPx: 75});
+    });
+
+    test('rejects arrow curvature and controlOffset out of bounds', () => {
+      expect(() =>
+        parseSerializedAnnotations({
+          version: 1,
+          annotations: [
+            {
+              id: 'a1',
+              kind: 'arrow',
+              color: '#000',
+              createdAt: 1,
+              updatedAt: 1,
+              curvature: 1001,
+              from: {
+                kind: 'point',
+                point: {ts: '0', trackUri: 't', yFrac: 0.5},
+              },
+              to: {
+                kind: 'point',
+                point: {ts: '100', trackUri: 't', yFrac: 0.5},
+              },
+            },
+          ],
+        }),
+      ).toThrow(/curvature/);
+
+      expect(() =>
+        parseSerializedAnnotations({
+          version: 1,
+          annotations: [
+            {
+              id: 'a2',
+              kind: 'arrow',
+              color: '#000',
+              createdAt: 1,
+              updatedAt: 1,
+              controlOffset: {alongFrac: 1.5, normalPx: 0},
+              from: {
+                kind: 'point',
+                point: {ts: '0', trackUri: 't', yFrac: 0.5},
+              },
+              to: {
+                kind: 'point',
+                point: {ts: '100', trackUri: 't', yFrac: 0.5},
+              },
+            },
+          ],
+        }),
+      ).toThrow(/controlOffset/);
+    });
+  });
 });

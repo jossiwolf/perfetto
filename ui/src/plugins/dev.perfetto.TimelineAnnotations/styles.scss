@@ -12,7 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+@keyframes pf-annotations-item-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pf-annotations-backdrop-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pf-annotations-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pf-annotations-popup-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .pf-timeline-annotations-tab {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -58,11 +101,51 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    transition:
+      background 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
 
     &.pf-active {
       background-color: var(--pf-color-primary);
       color: var(--pf-color-text-on-primary, #ffffff);
     }
+  }
+}
+
+.pf-timeline-annotations__color-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--pf-color-border);
+  border-radius: 4px;
+  background: var(--pf-color-background, #ffffff);
+  cursor: pointer;
+  height: 28px;
+  box-sizing: border-box;
+  transition:
+    background 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  &:hover {
+    border-color: var(--pf-color-accent);
+    transform: scale(1.04);
+  }
+
+  .pf-timeline-annotations__color-preview {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid #757575;
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  i.pf-icon {
+    font-size: 16px;
+    color: var(--pf-color-text-muted);
   }
 }
 
@@ -158,6 +241,11 @@
   background-color: var(--pf-color-background-secondary);
   border: 1px solid var(--pf-color-border);
   box-sizing: border-box;
+  animation: pf-annotations-item-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition:
+    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 140ms cubic-bezier(0.22, 1, 0.36, 1);
 
   &.pf-timeline-annotations-item--selected {
     outline: 2px solid var(--pf-color-accent);
@@ -175,6 +263,20 @@
   width: 24px;
   height: 24px;
   flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    background 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+
+  &:hover {
+    background: var(--pf-color-background-hover, rgba(0, 0, 0, 0.05));
+    border-color: var(--pf-color-border);
+  }
 }
 
 .pf-timeline-annotations-title-input {
@@ -199,28 +301,149 @@
   flex-shrink: 0;
 }
 
-.pf-timeline-annotations-confirm-banner {
+.pf-timeline-annotations-clear-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.45);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background-color: var(--pf-color-background-secondary);
-  border: 1px solid var(--pf-color-border);
-  border-radius: 4px;
-  margin-bottom: 8px;
+  justify-content: center;
+  backdrop-filter: blur(2px);
+  animation: pf-annotations-backdrop-enter 160ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.pf-timeline-annotations-details {
-  padding: 8px;
+.pf-timeline-annotations-clear-dialog {
+  background: var(--pf-color-background, #ffffff);
+  border: 1px solid var(--pf-color-border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
+  padding: 20px;
+  max-width: 360px;
+  width: 90%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  box-sizing: border-box;
+  animation: pf-annotations-dialog-enter 200ms cubic-bezier(0.22, 1, 0.36, 1);
 
-  h2 {
-    margin-top: 0;
-    margin-bottom: 8px;
-    font-size: var(--pf-font-size-l);
+  &__badge {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background-color: var(--pf-color-danger-subtle, rgba(229, 57, 53, 0.12));
+    color: var(--pf-color-danger, #e53935);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
   }
 
-  p {
-    margin: 4px 0;
-    font-size: var(--pf-font-size-m);
+  &__heading {
+    margin: 0;
+    font-size: var(--pf-font-size-l, 16px);
+    font-weight: 600;
+    color: var(--pf-color-text, #222222);
+  }
+
+  &__description {
+    margin: 0;
+    font-size: var(--pf-font-size-m, 13px);
+    color: var(--pf-color-text-muted, #666666);
+    line-height: 1.4;
+  }
+
+  &__actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    width: 100%;
+    margin-top: 4px;
+  }
+}
+
+.pf-timeline-annotations__style-popup {
+  animation: pf-annotations-popup-enter 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pf-timeline-annotations-style-panel {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 280px;
+  font-size: var(--pf-font-size-s, 12px);
+}
+
+.pf-timeline-annotations-style-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pf-timeline-annotations-fill-chips {
+  display: flex;
+  gap: 4px;
+}
+
+.pf-timeline-annotations-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-font-size-s, 12px);
+  color: var(--pf-color-text-muted);
+
+  input[type="range"] {
+    flex: 1;
+  }
+}
+
+.pf-timeline-annotations-slider-val {
+  min-width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-timeline-annotations-kind-menu {
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  gap: 2px;
+
+  button.pf-timeline-annotations-kind-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    font-size: var(--pf-font-size-m, 13px);
+    color: var(--pf-color-text);
+    transition: background 140ms cubic-bezier(0.22, 1, 0.36, 1);
+
+    &:hover {
+      background: var(--pf-color-background-hover, rgba(0, 0, 0, 0.05));
+    }
+
+    &.pf-active {
+      background: var(--pf-color-primary);
+      color: var(--pf-color-text-on-primary, #ffffff);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

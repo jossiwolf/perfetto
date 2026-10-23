@@ -554,4 +554,155 @@ describe('TimelineAnnotations: tools.ts', () => {
       expect(restored.anchor.trackUris).toEqual(['track_1']);
     }
   });
+
+  test('activateTool enables drawingMode, and setDrawingMode(true) restores lastCreationTool from select', () => {
+    const {controller} = setupController();
+    expect(controller.tool).toBe('rect');
+    expect(controller.drawingMode).toBe(false);
+
+    // activateTool enables drawing mode
+    controller.activateTool('pen');
+    expect(controller.tool).toBe('pen');
+    expect(controller.drawingMode).toBe(true);
+
+    // Switching to select does not arm creation tool
+    controller.setTool('select');
+    expect(controller.tool).toBe('select');
+
+    // Turning drawing mode off and back on restores pen
+    controller.setDrawingMode(false);
+    expect(controller.drawingMode).toBe(false);
+    controller.setDrawingMode(true);
+    expect(controller.drawingMode).toBe(true);
+    expect(controller.tool).toBe('pen');
+  });
+
+  test('consumeAutoFocusId tracks and consumes auto-focus for label creation', () => {
+    const {store, controller} = setupController();
+    controller.activateTool('label');
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 150, posY: 150, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 150, posY: 150, buttons: 0}),
+    );
+
+    const labels = store.list().filter((ann) => ann.kind === 'label');
+    expect(labels).toHaveLength(1);
+    const label = labels[0];
+    expect(label.title).toBe('Label');
+    expect(label.text).toBe('Label');
+    expect(controller.pendingAutoFocusId).toBe(label.id);
+
+    expect(controller.consumeAutoFocusId('non-existent-id')).toBe(false);
+    expect(controller.consumeAutoFocusId(label.id)).toBe(true);
+    expect(controller.pendingAutoFocusId).toBeUndefined();
+    expect(controller.consumeAutoFocusId(label.id)).toBe(false);
+  });
+
+  test('dragging an arrow midpoint curve handle bends the arrow', () => {
+    const {store, controller} = setupController();
+
+    const arrow = store.add({
+      kind: 'arrow',
+      color: '#00897b',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const geometries = new Map<string, AnnotationGeometry>();
+    geometries.set(arrow.id, {
+      id: arrow.id,
+      kind: 'arrow',
+      bbox: {
+        left: 100,
+        top: 150,
+        right: 300,
+        bottom: 150,
+        width: 200,
+        height: 0,
+      },
+      start: {x: 100, y: 150},
+      end: {x: 300, y: 150},
+      curveMidpoint: {x: 200, y: 150},
+    });
+    controller.setGeometryProvider((id?: string) =>
+      id ? geometries.get(id) : geometries,
+    );
+
+    controller.setDrawingMode(false);
+    controller.setTool('select');
+
+    // Pointer down on curve handle (200, 150)
+    controller.onPointerDown(
+      createPointerEvent({posX: 200, posY: 150, buttons: 1}),
+    );
+    // Move to (200, 200) -> 50px normal displacement
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 200, buttons: 1}),
+    );
+    expect(controller.preview).toBeDefined();
+    expect(controller.preview?.kind).toBe('arrow-curve');
+    if (controller.preview?.kind === 'arrow-curve') {
+      expect(controller.preview.annotationId).toBe(arrow.id);
+    }
+
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 200, buttons: 0}),
+    );
+
+    const curvedArrow = store.get(arrow.id);
+    expect(curvedArrow?.kind).toBe('arrow');
+    if (curvedArrow?.kind === 'arrow') {
+      expect(curvedArrow.curvature).toBeDefined();
+      expect(Math.abs(curvedArrow.curvature ?? 0)).toBeGreaterThan(10);
+      expect(curvedArrow.controlOffset).toBeDefined();
+    }
+
+    // Now drag with very small displacement (< 3px) -> snaps back to straight
+    controller.onPointerDown(
+      createPointerEvent({posX: 200, posY: 150, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 151, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 151, buttons: 0}),
+    );
+
+    const snappedArrow = store.get(arrow.id);
+    if (snappedArrow?.kind === 'arrow') {
+      expect(snappedArrow.curvature).toBe(0);
+      expect(snappedArrow.controlOffset).toBeUndefined();
+    }
+  });
+
+  test('applies custom fillColor and fillOpacity to created annotations', () => {
+    const {store, controller} = setupController();
+    controller.activateTool('rect');
+    controller.setFillColor('#123456');
+    controller.setFillOpacity(0.4);
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 200, posY: 180, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 200, posY: 180, buttons: 0}),
+    );
+
+    const annotations = store.list();
+    expect(annotations).toHaveLength(1);
+    expect(annotations[0].fillColor).toBe('#123456');
+    expect(annotations[0].fillOpacity).toBe(0.4);
+  });
 });

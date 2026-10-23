@@ -15,6 +15,7 @@
 import {Time} from '../../base/time';
 import type {Point2D} from '../../base/geom';
 import type {OverlayPointerEvent} from '../../public/track';
+import type {TrackNode} from '../../public/workspace';
 import type {
   AnchoredPoint,
   Annotation,
@@ -25,8 +26,11 @@ import type {
 import {areaForTrackRange, pointAtY, resolveTrackY} from './anchor';
 import {
   bboxOf,
+  computeQuadraticControlPoint,
+  curvatureFromMidpoint,
   hitTestEllipse,
   hitTestPolyline,
+  hitTestQuadraticBezier,
   hitTestRect,
   hitTestSegment,
   recognizeShape,
@@ -73,6 +77,14 @@ export type GesturePreview =
       readonly deltaX: number;
       readonly deltaY: number;
       readonly annotationId: string;
+    }
+  | {
+      readonly kind: 'arrow-curve';
+      readonly annotationId: string;
+      readonly start: Point2D;
+      readonly control: Point2D;
+      readonly end: Point2D;
+      readonly color: string;
     };
 
 export interface ToolControllerOptions {
@@ -88,14 +100,17 @@ export interface AnnotationGeometry {
   readonly polyline?: ReadonlyArray<Point2D>;
   readonly start?: Point2D;
   readonly end?: Point2D;
+  readonly control?: Point2D;
+  readonly curveMidpoint?: Point2D;
 }
 
 export type GeometryProvider = (
   id?: string,
+  rootNode?: TrackNode,
 ) => AnnotationGeometry | ReadonlyMap<string, AnnotationGeometry> | undefined;
 
 interface ActiveGesture {
-  readonly tool: ToolKind;
+  readonly tool: ToolKind | 'arrow-curve';
   readonly startEvent: OverlayPointerEvent;
   currentEvent: OverlayPointerEvent;
   penPoints?: Point2D[];
@@ -105,6 +120,9 @@ interface ActiveGesture {
   initialPosition?: AnchoredPoint;
   initialPoints?: ReadonlyArray<AnchoredPoint>;
   isDrag: boolean;
+  curveTargetId?: string;
+  arrowStartPx?: Point2D;
+  arrowEndPx?: Point2D;
 }
 
 import {PALETTE_COLORS} from './annotations_tab';
@@ -121,7 +139,11 @@ export class ToolController {
   private readonly opts: ToolControllerOptions;
   private isDrawingModeActive: boolean = false;
   private activeToolKind: ToolKind = 'rect';
+  private lastCreationTool: Exclude<ToolKind, 'select'> = 'rect';
   private activeStrokeColor: string;
+  private activeFillColor?: string;
+  private activeFillOpacity?: number;
+  private pendingAutoFocusAnnotationId?: string;
   private activeGesturePreview?: GesturePreview;
   private activeGestureState?: ActiveGesture;
   private geometryProviderFn?: GeometryProvider;
@@ -137,11 +159,19 @@ export class ToolController {
   }
 
   setDrawingMode(on: boolean): void {
+    let changed = false;
     if (this.isDrawingModeActive !== on) {
       this.isDrawingModeActive = on;
+      changed = true;
       if (!on) {
         this.cancelGesture();
       }
+    }
+    if (on && this.activeToolKind === 'select') {
+      this.activeToolKind = this.lastCreationTool;
+      changed = true;
+    }
+    if (changed) {
       this.opts.requestRedraw();
     }
   }
@@ -156,10 +186,20 @@ export class ToolController {
   }
 
   setTool(tool: ToolKind): void {
+    if (tool !== 'select') {
+      this.lastCreationTool = tool;
+    }
     if (this.activeToolKind !== tool) {
       this.cancelGesture();
       this.activeToolKind = tool;
       this.opts.requestRedraw();
+    }
+  }
+
+  activateTool(tool: ToolKind): void {
+    this.setTool(tool);
+    if (tool !== 'select') {
+      this.setDrawingMode(true);
     }
   }
 
@@ -172,6 +212,44 @@ export class ToolController {
       this.activeStrokeColor = color;
       this.opts.requestRedraw();
     }
+  }
+
+  get fillColor(): string | undefined {
+    return this.activeFillColor;
+  }
+
+  setFillColor(fillColor: string | undefined): void {
+    if (this.activeFillColor !== fillColor) {
+      this.activeFillColor = fillColor;
+      this.opts.requestRedraw();
+    }
+  }
+
+  get fillOpacity(): number | undefined {
+    return this.activeFillOpacity;
+  }
+
+  setFillOpacity(fillOpacity: number | undefined): void {
+    if (this.activeFillOpacity !== fillOpacity) {
+      this.activeFillOpacity = fillOpacity;
+      this.opts.requestRedraw();
+    }
+  }
+
+  get pendingAutoFocusId(): string | undefined {
+    return this.pendingAutoFocusAnnotationId;
+  }
+
+  requestAutoFocus(id: string): void {
+    this.pendingAutoFocusAnnotationId = id;
+  }
+
+  consumeAutoFocusId(id: string): boolean {
+    if (this.pendingAutoFocusAnnotationId === id) {
+      this.pendingAutoFocusAnnotationId = undefined;
+      return true;
+    }
+    return false;
   }
 
   isInteractive(): boolean {
@@ -214,11 +292,83 @@ export class ToolController {
   }
 
   onPointerDown(event: OverlayPointerEvent): void {
-    if (!this.isDrawingModeActive) {
+    const pointerPos: Point2D = {x: event.x, y: event.y};
+
+    if (!this.isDrawingModeActive || this.activeToolKind === 'select') {
+      const hitCurveArrow = this.hitTestCurveHandle(pointerPos, event.rootNode);
+      if (
+        hitCurveArrow !== undefined &&
+        hitCurveArrow.start !== undefined &&
+        hitCurveArrow.end !== undefined
+      ) {
+        this.store.select(hitCurveArrow.id);
+        this.activeGestureState = {
+          tool: 'arrow-curve',
+          startEvent: event,
+          currentEvent: event,
+          curveTargetId: hitCurveArrow.id,
+          arrowStartPx: hitCurveArrow.start,
+          arrowEndPx: hitCurveArrow.end,
+          isDrag: false,
+        };
+        this.opts.requestRedraw();
+        return;
+      }
+
+      const hitAnnotation = this.hitTestAnnotation(pointerPos, event.rootNode);
+      if (!this.isDrawingModeActive && hitAnnotation === undefined) {
+        return;
+      }
+
+      if (hitAnnotation !== undefined) {
+        if (event.shiftKey) {
+          if (this.store.selectedId === hitAnnotation.id) {
+            this.store.select(undefined);
+          } else {
+            this.store.select(hitAnnotation.id);
+          }
+        } else {
+          this.store.select(hitAnnotation.id);
+        }
+
+        const targetAnnotation = this.store.get(hitAnnotation.id);
+        let initialAnchor: AreaAnchor | undefined;
+        let initialPosition: AnchoredPoint | undefined;
+        let initialPoints: ReadonlyArray<AnchoredPoint> | undefined;
+
+        if (
+          targetAnnotation?.kind === 'rect' ||
+          targetAnnotation?.kind === 'ellipse'
+        ) {
+          initialAnchor = targetAnnotation.anchor;
+        } else if (targetAnnotation?.kind === 'label') {
+          initialPosition = targetAnnotation.position;
+        } else if (targetAnnotation?.kind === 'path') {
+          initialPoints = targetAnnotation.points;
+        }
+
+        this.activeGestureState = {
+          tool: 'select',
+          startEvent: event,
+          currentEvent: event,
+          selectedTargetId: hitAnnotation.id,
+          initialAnchor,
+          initialPosition,
+          initialPoints,
+          isDrag: false,
+        };
+      } else {
+        this.activeGestureState = {
+          tool: 'select',
+          startEvent: event,
+          currentEvent: event,
+          selectedTargetId: undefined,
+          isDrag: false,
+        };
+      }
+      this.opts.requestRedraw();
       return;
     }
-
-    const pointerPos: Point2D = {x: event.x, y: event.y};
 
     switch (this.activeToolKind) {
       case 'rect':
@@ -262,7 +412,10 @@ export class ToolController {
         break;
       }
       case 'arrow': {
-        const hitAnnotation = this.hitTestAnnotation(pointerPos);
+        const hitAnnotation = this.hitTestAnnotation(
+          pointerPos,
+          event.rootNode,
+        );
         let arrowFrom: ArrowEndpoint | undefined;
         if (hitAnnotation !== undefined) {
           arrowFrom = {kind: 'annotation', id: hitAnnotation.id};
@@ -308,65 +461,10 @@ export class ToolController {
         };
         break;
       }
-      case 'select': {
-        const hitAnnotation = this.hitTestAnnotation(pointerPos);
-        if (hitAnnotation !== undefined) {
-          if (event.shiftKey) {
-            if (this.store.selectedId === hitAnnotation.id) {
-              this.store.select(undefined);
-            } else {
-              this.store.select(hitAnnotation.id);
-            }
-          } else {
-            this.store.select(hitAnnotation.id);
-          }
-
-          const targetAnnotation = this.store.get(hitAnnotation.id);
-          let initialAnchor: AreaAnchor | undefined;
-          let initialPosition: AnchoredPoint | undefined;
-          let initialPoints: ReadonlyArray<AnchoredPoint> | undefined;
-
-          if (
-            targetAnnotation?.kind === 'rect' ||
-            targetAnnotation?.kind === 'ellipse'
-          ) {
-            initialAnchor = targetAnnotation.anchor;
-          } else if (targetAnnotation?.kind === 'label') {
-            initialPosition = targetAnnotation.position;
-          } else if (targetAnnotation?.kind === 'path') {
-            initialPoints = targetAnnotation.points;
-          }
-
-          this.activeGestureState = {
-            tool: 'select',
-            startEvent: event,
-            currentEvent: event,
-            selectedTargetId: hitAnnotation.id,
-            initialAnchor,
-            initialPosition,
-            initialPoints,
-            isDrag: false,
-          };
-        } else {
-          this.activeGestureState = {
-            tool: 'select',
-            startEvent: event,
-            currentEvent: event,
-            selectedTargetId: undefined,
-            isDrag: false,
-          };
-        }
-        this.opts.requestRedraw();
-        break;
-      }
     }
   }
 
   onPointerMove(event: OverlayPointerEvent): void {
-    if (!this.isDrawingModeActive) {
-      return;
-    }
-
     if (!this.activeGestureState || event.buttons === 0) {
       return;
     }
@@ -385,6 +483,34 @@ export class ToolController {
     this.activeGestureState.currentEvent = event;
 
     switch (this.activeGestureState.tool) {
+      case 'arrow-curve': {
+        const {curveTargetId, arrowStartPx, arrowEndPx} =
+          this.activeGestureState;
+        if (curveTargetId && arrowStartPx && arrowEndPx) {
+          const {curvature, alongFrac} = curvatureFromMidpoint(
+            arrowStartPx,
+            arrowEndPx,
+            pointerPos,
+          );
+          const control = computeQuadraticControlPoint(
+            arrowStartPx,
+            arrowEndPx,
+            curvature,
+            alongFrac,
+          );
+          const arrowAnn = this.store.get(curveTargetId);
+          this.activeGesturePreview = {
+            kind: 'arrow-curve',
+            annotationId: curveTargetId,
+            start: arrowStartPx,
+            control,
+            end: arrowEndPx,
+            color: arrowAnn?.color ?? this.activeStrokeColor,
+          };
+          this.opts.requestRedraw();
+        }
+        break;
+      }
       case 'rect':
       case 'ellipse': {
         const minX = Math.min(startEvent.x, event.x);
@@ -448,7 +574,7 @@ export class ToolController {
   }
 
   onPointerUp(event: OverlayPointerEvent): void {
-    if (!this.isDrawingModeActive || !this.activeGestureState) {
+    if (!this.activeGestureState) {
       return;
     }
 
@@ -461,6 +587,31 @@ export class ToolController {
     const pointerPos: Point2D = {x: event.x, y: event.y};
 
     switch (gesture.tool) {
+      case 'arrow-curve': {
+        const {curveTargetId, arrowStartPx, arrowEndPx} = gesture;
+        if (curveTargetId && arrowStartPx && arrowEndPx) {
+          const {curvature, alongFrac} = curvatureFromMidpoint(
+            arrowStartPx,
+            arrowEndPx,
+            pointerPos,
+          );
+          if (Math.abs(curvature) < 3) {
+            this.store.update(curveTargetId, {
+              curvature: 0,
+              controlOffset: undefined,
+            });
+          } else {
+            this.store.update(curveTargetId, {
+              curvature: Math.round(curvature),
+              controlOffset: {
+                alongFrac: Number(alongFrac.toFixed(3)),
+                normalPx: Math.round(curvature),
+              },
+            });
+          }
+        }
+        break;
+      }
       case 'rect':
       case 'ellipse': {
         if (distanceMoved >= MIN_DRAG_DISTANCE_PX) {
@@ -478,6 +629,12 @@ export class ToolController {
           const created = this.store.add({
             kind: gesture.tool,
             color: this.activeStrokeColor,
+            ...(this.activeFillColor !== undefined
+              ? {fillColor: this.activeFillColor}
+              : {}),
+            ...(this.activeFillOpacity !== undefined
+              ? {fillOpacity: this.activeFillOpacity}
+              : {}),
             anchor: {
               start: startTs,
               end: endTs,
@@ -526,6 +683,12 @@ export class ToolController {
               const created = this.store.add({
                 kind: recognized.kind,
                 color: this.activeStrokeColor,
+                ...(this.activeFillColor !== undefined
+                  ? {fillColor: this.activeFillColor}
+                  : {}),
+                ...(this.activeFillOpacity !== undefined
+                  ? {fillOpacity: this.activeFillOpacity}
+                  : {}),
                 anchor: {
                   start: startTs,
                   end: endTs,
@@ -562,6 +725,12 @@ export class ToolController {
                 const created = this.store.add({
                   kind: 'arrow',
                   color: this.activeStrokeColor,
+                  ...(this.activeFillColor !== undefined
+                    ? {fillColor: this.activeFillColor}
+                    : {}),
+                  ...(this.activeFillOpacity !== undefined
+                    ? {fillOpacity: this.activeFillOpacity}
+                    : {}),
                   from: {kind: 'point', point: startPoint},
                   to: {kind: 'point', point: endPoint},
                 });
@@ -594,6 +763,12 @@ export class ToolController {
                 const created = this.store.add({
                   kind: 'path',
                   color: this.activeStrokeColor,
+                  ...(this.activeFillColor !== undefined
+                    ? {fillColor: this.activeFillColor}
+                    : {}),
+                  ...(this.activeFillOpacity !== undefined
+                    ? {fillOpacity: this.activeFillOpacity}
+                    : {}),
                   points: anchoredPoints,
                 });
                 this.store.select(created.id);
@@ -605,7 +780,7 @@ export class ToolController {
         break;
       }
       case 'arrow': {
-        const hitTargetUp = this.hitTestAnnotation(pointerPos);
+        const hitTargetUp = this.hitTestAnnotation(pointerPos, event.rootNode);
         let arrowTo: ArrowEndpoint | undefined;
         if (hitTargetUp !== undefined) {
           arrowTo = {kind: 'annotation', id: hitTargetUp.id};
@@ -642,6 +817,12 @@ export class ToolController {
             const created = this.store.add({
               kind: 'arrow',
               color: this.activeStrokeColor,
+              ...(this.activeFillColor !== undefined
+                ? {fillColor: this.activeFillColor}
+                : {}),
+              ...(this.activeFillOpacity !== undefined
+                ? {fillOpacity: this.activeFillOpacity}
+                : {}),
               from: arrowFrom,
               to: arrowTo,
             });
@@ -657,8 +838,15 @@ export class ToolController {
           if (anchorAtPointer !== undefined) {
             const created = this.store.add({
               kind: 'label',
-              color: this.activeStrokeColor,
+              title: 'Label',
               text: 'Label',
+              color: this.activeStrokeColor,
+              ...(this.activeFillColor !== undefined
+                ? {fillColor: this.activeFillColor}
+                : {}),
+              ...(this.activeFillOpacity !== undefined
+                ? {fillOpacity: this.activeFillOpacity}
+                : {}),
               position: {
                 ts: event.ts,
                 trackUri: anchorAtPointer.trackUri,
@@ -666,6 +854,7 @@ export class ToolController {
                 yFrac: anchorAtPointer.yFrac,
               },
             });
+            this.requestAutoFocus(created.id);
             this.store.select(created.id);
             this.opts.onAnnotationCreated?.(created.id);
           }
@@ -695,7 +884,10 @@ export class ToolController {
               let newTrackUris = origAnchor.trackUris;
               let newTrackNames = origAnchor.trackNames;
 
-              const origGeom = this.getGeometryForId(annotationId);
+              const origGeom = this.getGeometryForId(
+                annotationId,
+                event.rootNode,
+              );
               if (origGeom !== undefined) {
                 const newTop = origGeom.bbox.top + deltaY;
                 const newBottom = origGeom.bbox.bottom + deltaY;
@@ -726,7 +918,10 @@ export class ToolController {
               const origPosition =
                 gesture.initialPosition ?? targetAnnotation.position;
               const newTs = Time.add(origPosition.ts, deltaTs);
-              const origGeom = this.getGeometryForId(annotationId);
+              const origGeom = this.getGeometryForId(
+                annotationId,
+                event.rootNode,
+              );
               const targetY =
                 origGeom !== undefined ? origGeom.bbox.top + deltaY : event.y;
               const newAnchor =
@@ -787,8 +982,59 @@ export class ToolController {
     this.opts.requestRedraw();
   }
 
-  private hitTestAnnotation(point: Point2D): AnnotationGeometry | undefined {
-    const geometriesList = this.getAllGeometries();
+  private hitTestCurveHandle(
+    point: Point2D,
+    rootNode?: TrackNode,
+  ): AnnotationGeometry | undefined {
+    if (this.store.selectedId !== undefined) {
+      const selectedGeom = this.getGeometryForId(
+        this.store.selectedId,
+        rootNode,
+      );
+      if (
+        selectedGeom &&
+        selectedGeom.kind === 'arrow' &&
+        selectedGeom.start &&
+        selectedGeom.end
+      ) {
+        const handle = selectedGeom.curveMidpoint ?? {
+          x: (selectedGeom.start.x + selectedGeom.end.x) / 2,
+          y: (selectedGeom.start.y + selectedGeom.end.y) / 2,
+        };
+        if (Math.hypot(point.x - handle.x, point.y - handle.y) <= 8) {
+          return selectedGeom;
+        }
+      }
+    }
+
+    const allGeometries = this.getAllGeometries(rootNode);
+    for (let index = allGeometries.length - 1; index >= 0; index -= 1) {
+      const geometry = allGeometries[index];
+      if (this.store.isHidden(geometry.id)) {
+        continue;
+      }
+      if (
+        geometry.kind === 'arrow' &&
+        geometry.start !== undefined &&
+        geometry.end !== undefined
+      ) {
+        const handle = geometry.curveMidpoint ?? {
+          x: (geometry.start.x + geometry.end.x) / 2,
+          y: (geometry.start.y + geometry.end.y) / 2,
+        };
+        if (Math.hypot(point.x - handle.x, point.y - handle.y) <= 8) {
+          return geometry;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private hitTestAnnotation(
+    point: Point2D,
+    rootNode?: TrackNode,
+  ): AnnotationGeometry | undefined {
+    const geometriesList = this.getAllGeometries(rootNode);
 
     for (let index = geometriesList.length - 1; index >= 0; index -= 1) {
       const geometry = geometriesList[index];
@@ -819,12 +1065,22 @@ export class ToolController {
         geometry.start !== undefined &&
         geometry.end !== undefined
       ) {
-        isHit = hitTestSegment(
-          point,
-          geometry.start,
-          geometry.end,
-          HIT_TEST_TOLERANCE_PX,
-        );
+        if (geometry.control !== undefined) {
+          isHit = hitTestQuadraticBezier(
+            point,
+            geometry.start,
+            geometry.control,
+            geometry.end,
+            HIT_TEST_TOLERANCE_PX,
+          );
+        } else {
+          isHit = hitTestSegment(
+            point,
+            geometry.start,
+            geometry.end,
+            HIT_TEST_TOLERANCE_PX,
+          );
+        }
       } else {
         isHit = hitTestRect(point, geometry.bbox, HIT_TEST_TOLERANCE_PX, true);
       }
@@ -837,11 +1093,11 @@ export class ToolController {
     return undefined;
   }
 
-  private getAllGeometries(): AnnotationGeometry[] {
+  private getAllGeometries(rootNode?: TrackNode): AnnotationGeometry[] {
     if (!this.geometryProviderFn) {
       return [];
     }
-    const result = this.geometryProviderFn();
+    const result = this.geometryProviderFn(undefined, rootNode);
     if (!result) {
       return [];
     }
@@ -860,15 +1116,18 @@ export class ToolController {
     return [];
   }
 
-  private getGeometryForId(annId: string): AnnotationGeometry | undefined {
+  private getGeometryForId(
+    annId: string,
+    rootNode?: TrackNode,
+  ): AnnotationGeometry | undefined {
     if (!this.geometryProviderFn) {
       return undefined;
     }
-    const directResult = this.geometryProviderFn(annId);
+    const directResult = this.geometryProviderFn(annId, rootNode);
     if (directResult && 'bbox' in (directResult as object)) {
       return directResult as AnnotationGeometry;
     }
-    const allGeometries = this.geometryProviderFn();
+    const allGeometries = this.geometryProviderFn(undefined, rootNode);
     if (
       allGeometries &&
       typeof (allGeometries as ReadonlyMap<string, AnnotationGeometry>).get ===

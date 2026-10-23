@@ -26,6 +26,7 @@ import type {
 import {TrackNode} from '../../public/workspace';
 import {
   createOverlayInteractionZone,
+  createOverlayInteractionZones,
   type OverlayInteractionZoneArgs,
 } from './overlay_interactions';
 
@@ -518,6 +519,354 @@ describe('overlay_interactions', () => {
       dispatchMouseEvent('click', 300, 20);
 
       expect(builtInClick).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('createOverlayInteractionZones', () => {
+    test('returns empty array when there are no overlays and none has interaction zones', () => {
+      expect(createOverlayInteractionZones(createArgs([]))).toEqual([]);
+
+      const passiveOverlay: Overlay = {
+        render: vi.fn(),
+      };
+      expect(
+        createOverlayInteractionZones(createArgs([passiveOverlay])),
+      ).toEqual([]);
+    });
+
+    test('fine-grained zones from getInteractionZones are converted with custom cursor and route onClick and drag', () => {
+      const onPointerDown = vi.fn();
+      const onPointerMove = vi.fn();
+      const onPointerUp = vi.fn();
+
+      const overlayWithZones: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => false,
+        getInteractionZones: () => [
+          {
+            id: 'handle-1',
+            area: new Rect2D({left: 210, top: 10, right: 230, bottom: 30}),
+            cursor: 'grab',
+          },
+          {
+            id: 'annotation-box',
+            area: new Rect2D({left: 300, top: 40, right: 400, bottom: 80}),
+          },
+        ],
+        onPointerDown,
+        onPointerMove,
+        onPointerUp,
+      };
+
+      const zones = createOverlayInteractionZones(
+        createArgs([overlayWithZones]),
+      );
+      expect(zones).toHaveLength(2);
+
+      const zone1 = zones[0];
+      expect(zone1.id).toBe('overlay-zone:handle-1');
+      expect(zone1.cursor).toBe('grab');
+      expect(zone1.drag?.cursorWhileDragging).toBe('grab');
+      expect(zone1.drag?.minDistance).toBe(0);
+
+      const zone2 = zones[1];
+      expect(zone2.id).toBe('overlay-zone:annotation-box');
+      expect(zone2.cursor).toBe('pointer'); // default when cursor is omitted
+      expect(zone2.drag?.cursorWhileDragging).toBe('pointer');
+
+      // Test drag routing on zone1
+      const element = document.createElement('div');
+      const dragStartEvent = {
+        dragStart: new Vector2D({x: 215, y: 15}),
+        dragCurrent: new Vector2D({x: 215, y: 15}),
+        dragDelta: new Vector2D({x: 0, y: 0}),
+        deltaSinceLastEvent: new Vector2D({x: 0, y: 0}),
+        altKey: false,
+        shiftKey: true,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 1,
+      };
+      zone1.drag?.onDragStart?.(dragStartEvent, element);
+
+      expect(onPointerDown).toHaveBeenCalledTimes(1);
+      const downCall = onPointerDown.mock.calls[0][0];
+      expect(downCall.x).toBe(215);
+      expect(downCall.y).toBe(15);
+      expect(downCall.shiftKey).toBe(true);
+
+      const dragMoveEvent = {
+        dragStart: new Vector2D({x: 215, y: 15}),
+        dragCurrent: new Vector2D({x: 225, y: 25}),
+        dragDelta: new Vector2D({x: 10, y: 10}),
+        deltaSinceLastEvent: new Vector2D({x: 10, y: 10}),
+        altKey: false,
+        shiftKey: true,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 1,
+      };
+      zone1.drag?.onDrag?.(dragMoveEvent, element);
+
+      expect(onPointerMove).toHaveBeenCalledTimes(1);
+      const moveCall = onPointerMove.mock.calls[0][0];
+      expect(moveCall.x).toBe(225);
+      expect(moveCall.y).toBe(25);
+
+      const dragEndEvent = {
+        dragStart: new Vector2D({x: 215, y: 15}),
+        dragCurrent: new Vector2D({x: 230, y: 30}),
+        dragDelta: new Vector2D({x: 15, y: 15}),
+        deltaSinceLastEvent: new Vector2D({x: 5, y: 5}),
+        altKey: false,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 0,
+      };
+      zone1.drag?.onDragEnd?.(dragEndEvent, element);
+
+      expect(onPointerUp).toHaveBeenCalledTimes(1);
+      const upCall = onPointerUp.mock.calls[0][0];
+      expect(upCall.x).toBe(230);
+      expect(upCall.y).toBe(30);
+
+      // Test onClick on zone2
+      onPointerDown.mockClear();
+      onPointerUp.mockClear();
+      zone2.onClick?.({position: new Vector2D({x: 350, y: 60})});
+
+      expect(onPointerDown).toHaveBeenCalledTimes(1);
+      expect(onPointerUp).toHaveBeenCalledTimes(1);
+      expect(onPointerDown.mock.calls[0][0].x).toBe(350);
+      expect(onPointerUp.mock.calls[0][0].x).toBe(350);
+    });
+
+    test('when isInteractive is true, full canvas zone is included after fine-grained zones', () => {
+      const fineGrainedOverlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => false,
+        getInteractionZones: () => [
+          {
+            id: 'handle-a',
+            area: new Rect2D({left: 250, top: 10, right: 270, bottom: 30}),
+            cursor: 'ns-resize',
+          },
+        ],
+        onPointerDown: vi.fn(),
+      };
+
+      const interactiveOverlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => true,
+        onPointerDown: vi.fn(),
+      };
+
+      const zones = createOverlayInteractionZones(
+        createArgs([fineGrainedOverlay, interactiveOverlay]),
+      );
+
+      // Fine-grained zone first, full-canvas zone last
+      expect(zones).toHaveLength(2);
+      expect(zones[0].id).toBe('overlay-zone:handle-a');
+      expect(zones[0].cursor).toBe('ns-resize');
+      expect(zones[1].id).toBe('overlay-interaction');
+      expect(zones[1].area).toBe(timelineRect);
+    });
+
+    test('interactive overlay without getInteractionZones returns only the full canvas zone', () => {
+      const interactiveOverlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => true,
+      };
+
+      const zones = createOverlayInteractionZones(
+        createArgs([interactiveOverlay]),
+      );
+      expect(zones).toHaveLength(1);
+      expect(zones[0].id).toBe('overlay-interaction');
+    });
+
+    test('fine-grained zones and full-canvas zone share gesture state across frames', () => {
+      const fineGrainedDown = vi.fn();
+      const fineGrainedMove = vi.fn();
+      const fineGrainedUp = vi.fn();
+
+      const overlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => true,
+        getInteractionZones: () => [
+          {
+            id: 'shape-1',
+            area: new Rect2D({left: 220, top: 20, right: 260, bottom: 60}),
+          },
+        ],
+        onPointerDown: fineGrainedDown,
+        onPointerMove: fineGrainedMove,
+        onPointerUp: fineGrainedUp,
+      };
+
+      const gestureState = {active: false};
+      const element = document.createElement('div');
+
+      const zonesFrame1 = createOverlayInteractionZones(
+        createArgs([overlay], gestureState),
+      );
+      const zone1 = zonesFrame1[0];
+
+      // Drag start on fine-grained zone
+      const moveEvent1 = {
+        dragStart: new Vector2D({x: 230, y: 30}),
+        dragCurrent: new Vector2D({x: 235, y: 35}),
+        dragDelta: new Vector2D({x: 5, y: 5}),
+        deltaSinceLastEvent: new Vector2D({x: 5, y: 5}),
+        altKey: false,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 1,
+      };
+      zone1.drag?.onDrag?.(moveEvent1, element);
+
+      expect(fineGrainedDown).toHaveBeenCalledTimes(1);
+      expect(fineGrainedMove).toHaveBeenCalledTimes(1);
+      expect(gestureState.active).toBe(true);
+
+      // Next frame: rebuild zones with same gestureState
+      const zonesFrame2 = createOverlayInteractionZones(
+        createArgs([overlay], gestureState),
+      );
+      const zone2 = zonesFrame2[0];
+
+      const moveEvent2 = {
+        dragStart: new Vector2D({x: 230, y: 30}),
+        dragCurrent: new Vector2D({x: 240, y: 40}),
+        dragDelta: new Vector2D({x: 10, y: 10}),
+        deltaSinceLastEvent: new Vector2D({x: 5, y: 5}),
+        altKey: false,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 1,
+      };
+      zone2.drag?.onDrag?.(moveEvent2, element);
+
+      expect(fineGrainedDown).toHaveBeenCalledTimes(1);
+      expect(fineGrainedMove).toHaveBeenCalledTimes(2);
+
+      // Drag end
+      const endEvent = {
+        dragStart: new Vector2D({x: 230, y: 30}),
+        dragCurrent: new Vector2D({x: 250, y: 50}),
+        dragDelta: new Vector2D({x: 20, y: 20}),
+        deltaSinceLastEvent: new Vector2D({x: 10, y: 10}),
+        altKey: false,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        buttons: 0,
+      };
+      zone2.drag?.onDragEnd?.(endEvent, element);
+
+      expect(fineGrainedDown).toHaveBeenCalledTimes(1);
+      expect(fineGrainedUp).toHaveBeenCalledTimes(1);
+      expect(gestureState.active).toBe(false);
+    });
+
+    test('integration with ZonedInteractionHandler prioritizes fine-grained zone over full-canvas zone', () => {
+      const div = document.createElement('div');
+      div.style.width = '1000px';
+      div.style.height = '500px';
+      document.body.appendChild(div);
+      const handler = new ZonedInteractionHandler(div);
+
+      const fineGrainedDown = vi.fn();
+      const canvasDown = vi.fn();
+
+      const fineGrainedOverlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => false,
+        getInteractionZones: () => [
+          {
+            id: 'item',
+            area: new Rect2D({left: 300, top: 50, right: 350, bottom: 100}),
+            cursor: 'move',
+          },
+        ],
+        onPointerDown: fineGrainedDown,
+      };
+
+      const canvasOverlay: Overlay = {
+        render: vi.fn(),
+        isInteractive: () => true,
+        onPointerDown: canvasDown,
+      };
+
+      const zones = createOverlayInteractionZones(
+        createArgs([fineGrainedOverlay, canvasOverlay]),
+      );
+
+      handler.update([...zones]);
+
+      // Drag inside fine-grained zone area (320, 60) -> (330, 70)
+      div.dispatchEvent(
+        new MouseEvent('mousedown', {
+          bubbles: true,
+          clientX: 320,
+          clientY: 60,
+          buttons: 1,
+        }),
+      );
+      div.dispatchEvent(
+        new MouseEvent('mousemove', {
+          bubbles: true,
+          clientX: 330,
+          clientY: 70,
+          buttons: 1,
+        }),
+      );
+      div.dispatchEvent(
+        new MouseEvent('mouseup', {
+          bubbles: true,
+          clientX: 330,
+          clientY: 70,
+          buttons: 0,
+        }),
+      );
+
+      expect(fineGrainedDown).toHaveBeenCalledTimes(1);
+      expect(canvasDown).not.toHaveBeenCalled();
+
+      // Drag outside fine-grained zone area, but inside timelineRect (400, 200) -> (410, 210)
+      div.dispatchEvent(
+        new MouseEvent('mousedown', {
+          bubbles: true,
+          clientX: 400,
+          clientY: 200,
+          buttons: 1,
+        }),
+      );
+      div.dispatchEvent(
+        new MouseEvent('mousemove', {
+          bubbles: true,
+          clientX: 410,
+          clientY: 210,
+          buttons: 1,
+        }),
+      );
+      div.dispatchEvent(
+        new MouseEvent('mouseup', {
+          bubbles: true,
+          clientX: 410,
+          clientY: 210,
+          buttons: 0,
+        }),
+      );
+
+      expect(canvasDown).toHaveBeenCalledTimes(1);
+
+      handler[Symbol.dispose]();
+      div.remove();
     });
   });
 });

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {describe, expect, test, vi} from 'vitest';
+import {Rect2D} from '../../base/geom';
 import {Time} from '../../base/time';
 import {HighPrecisionTime} from '../../base/high_precision_time';
 import {HighPrecisionTimeSpan} from '../../base/high_precision_time_span';
@@ -123,6 +124,22 @@ function createFakeCanvasContext(): {
     ),
     lineTo: vi.fn((x: number, y: number) =>
       calls.push({method: 'lineTo', args: [x, y]}),
+    ),
+    quadraticCurveTo: vi.fn((cpx: number, cpy: number, x: number, y: number) =>
+      calls.push({method: 'quadraticCurveTo', args: [cpx, cpy, x, y]}),
+    ),
+    arc: vi.fn(
+      (
+        x: number,
+        y: number,
+        radius: number,
+        startAngle: number,
+        endAngle: number,
+      ) =>
+        calls.push({
+          method: 'arc',
+          args: [x, y, radius, startAngle, endAngle],
+        }),
     ),
     arcTo: vi.fn(
       (x1: number, y1: number, x2: number, y2: number, radius: number) =>
@@ -641,5 +658,245 @@ describe('TimelineAnnotations: overlay.ts', () => {
     expect(
       calls.some((c) => c.method === 'stroke' && c.strokeStyle === '#00897b'),
     ).toBe(true);
+  });
+
+  test('renders custom fillColor and fillOpacity for rect', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      fillColor: '#00ff00',
+      fillOpacity: 0.3,
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    const fillCall = calls.find(
+      (c) =>
+        c.method === 'fillRect' &&
+        c.fillStyle === 'rgba(0, 255, 0, 0.3)' &&
+        c.args[0] === 100 &&
+        c.args[1] === 100,
+    );
+    expect(fillCall).toBeDefined();
+  });
+
+  test('renders LabelAnnotation custom typography and background color', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    store.add({
+      kind: 'label',
+      color: '#ff00ff',
+      text: 'Custom Styled Label',
+      fontFamily: 'monospace',
+      fontSize: 16,
+      textColor: '#ffffff',
+      backgroundColor: '#00ffff',
+      fillOpacity: 0.5,
+      position: {
+        ts: Time.fromRaw(150n),
+        trackUri: 'track_1',
+        yFrac: 0.5,
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    expect(ctx.font).toBe('16px monospace');
+    const bgFill = calls.find(
+      (c) => c.method === 'fill' && c.fillStyle === 'rgba(0, 255, 255, 0.5)',
+    );
+    expect(bgFill).toBeDefined();
+
+    const textCall = calls.find(
+      (c) =>
+        c.method === 'fillText' &&
+        c.args[0] === 'Custom Styled Label' &&
+        c.fillStyle === '#ffffff',
+    );
+    expect(textCall).toBeDefined();
+  });
+
+  test('renders curved arrow with quadraticCurveTo and under-glow when fillColor is set', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    store.add({
+      kind: 'arrow',
+      color: '#e53935',
+      fillColor: '#00e5ff',
+      curvature: 40,
+      controlOffset: {alongFrac: 0.5, normalPx: 40},
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    const quadCall = calls.find((c) => c.method === 'quadraticCurveTo');
+    expect(quadCall).toBeDefined();
+
+    const underglowStroke = calls.find(
+      (c) => c.method === 'stroke' && c.lineWidth === 6,
+    );
+    expect(underglowStroke).toBeDefined();
+  });
+
+  test('multi-tree rootNode geometry preservation and getInteractionZones', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools, {
+      trackExists: (uri) => uri === 'pinned_track' || uri === 'scroll_track',
+    });
+
+    const pinnedRoot = new TrackNode({name: 'Pinned Root'});
+    const pinnedTrack = new TrackNode({uri: 'pinned_track', name: 'Pinned 1'});
+    pinnedRoot.addChildLast(pinnedTrack);
+
+    const scrollRoot = new TrackNode({name: 'Scrolling Root'});
+    const scrollTrack = new TrackNode({uri: 'scroll_track', name: 'Scroll 1'});
+    scrollRoot.addChildLast(scrollTrack);
+
+    const ann1 = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['pinned_track'],
+      },
+    });
+
+    const ann2 = store.add({
+      kind: 'rect',
+      color: '#00ff00',
+      anchor: {
+        start: Time.fromRaw(150n),
+        end: Time.fromRaw(250n),
+        trackUris: ['scroll_track'],
+      },
+    });
+
+    const pinnedTracks: TrackBounds[] = [
+      {node: pinnedTrack, verticalBounds: {top: 10, bottom: 60}},
+    ];
+    const scrollTracks: TrackBounds[] = [
+      {node: scrollTrack, verticalBounds: {top: 100, bottom: 200}},
+    ];
+
+    const {ctx: ctxPinned} = createFakeCanvasContext();
+    overlay.render(ctxPinned, timescale, size, pinnedTracks, theme, pinnedRoot);
+
+    const {ctx: ctxScroll} = createFakeCanvasContext();
+    overlay.render(ctxScroll, timescale, size, scrollTracks, theme, scrollRoot);
+
+    const timelineRect = new Rect2D({
+      left: 0,
+      top: 0,
+      right: 1000,
+      bottom: 500,
+    });
+    const pinnedZones = overlay.getInteractionZones({
+      timelineRect,
+      timescale,
+      tracks: pinnedTracks,
+      rootNode: pinnedRoot,
+    });
+    expect(pinnedZones.some((z) => z.id === `annotation:${ann1.id}`)).toBe(
+      true,
+    );
+    expect(pinnedZones.some((z) => z.id === `annotation:${ann2.id}`)).toBe(
+      false,
+    );
+
+    const scrollZones = overlay.getInteractionZones({
+      timelineRect,
+      timescale,
+      tracks: scrollTracks,
+      rootNode: scrollRoot,
+    });
+    expect(scrollZones.some((z) => z.id === `annotation:${ann2.id}`)).toBe(
+      true,
+    );
+    expect(scrollZones.some((z) => z.id === `annotation:${ann1.id}`)).toBe(
+      false,
+    );
+  });
+
+  test('isInteractive and getInteractionZones respect tool mode', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    const arrow = store.add({
+      kind: 'arrow',
+      color: '#ff0000',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const {ctx} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    const timelineRect = new Rect2D({
+      left: 0,
+      top: 0,
+      right: 1000,
+      bottom: 500,
+    });
+    const interactionCtx = {
+      timelineRect,
+      timescale,
+      tracks: visibleTracks,
+      rootNode,
+    };
+
+    // When drawingMode is false: overlay is not full-canvas interactive, but interaction zones are provided
+    expect(overlay.isInteractive()).toBe(false);
+    const zonesNonDrawing = overlay.getInteractionZones(interactionCtx);
+    expect(zonesNonDrawing.length).toBeGreaterThan(0);
+    expect(
+      zonesNonDrawing.some((z) => z.id === `arrow-curve:${arrow.id}`),
+    ).toBe(true);
+
+    // When drawingMode is on with creation tool (e.g. rect):
+    tools.setDrawingMode(true);
+    expect(tools.tool).toBe('rect');
+    expect(overlay.isInteractive()).toBe(true);
+    // When full-canvas interactive creation tool is armed, getInteractionZones returns empty
+    expect(overlay.getInteractionZones(interactionCtx)).toEqual([]);
+
+    // When tool is switched to select in drawingMode:
+    tools.setTool('select');
+    expect(overlay.isInteractive()).toBe(false);
+    expect(overlay.getInteractionZones(interactionCtx).length).toBeGreaterThan(
+      0,
+    );
   });
 });

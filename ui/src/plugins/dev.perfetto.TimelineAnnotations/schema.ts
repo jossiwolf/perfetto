@@ -63,6 +63,8 @@ export const SerializedBaseAnnotationSchema = z.object({
   title: z.string().optional(),
   description: z.string().optional(),
   color: z.string().min(1),
+  fillColor: z.string().min(1).optional(),
+  fillOpacity: z.number().min(0).max(1).optional(),
   author: z.string().optional(),
   createdAt: z.number().finite(),
   updatedAt: z.number().finite(),
@@ -80,11 +82,22 @@ export const SerializedEllipseAnnotationSchema =
     anchor: SerializedAreaAnchorSchema,
   });
 
+export const LabelFontFamilySchema = z.enum([
+  'sans-serif',
+  'monospace',
+  'serif',
+]);
+export type LabelFontFamily = 'sans-serif' | 'monospace' | 'serif';
+
 export const SerializedLabelAnnotationSchema =
   SerializedBaseAnnotationSchema.extend({
     kind: z.literal('label'),
     position: SerializedPointSchema,
     text: z.string(),
+    fontFamily: LabelFontFamilySchema.optional(),
+    fontSize: z.number().min(8).max(72).optional(),
+    textColor: z.string().min(1).optional(),
+    backgroundColor: z.string().min(1).optional(),
   });
 
 export const SerializedPathAnnotationSchema =
@@ -93,11 +106,22 @@ export const SerializedPathAnnotationSchema =
     points: z.array(SerializedPointSchema).max(256),
   });
 
+export const ArrowControlOffsetSchema = z.object({
+  alongFrac: z.number().min(0).max(1),
+  normalPx: z.number().min(-1000).max(1000),
+});
+export type ArrowControlOffset = {
+  readonly alongFrac: number;
+  readonly normalPx: number;
+};
+
 export const SerializedArrowAnnotationSchema =
   SerializedBaseAnnotationSchema.extend({
     kind: z.literal('arrow'),
     from: SerializedArrowEndpointSchema,
     to: SerializedArrowEndpointSchema,
+    curvature: z.number().min(-1000).max(1000).optional(),
+    controlOffset: ArrowControlOffsetSchema.optional(),
   });
 
 export const SerializedAnnotationSchema = z.discriminatedUnion('kind', [

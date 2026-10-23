@@ -17,18 +17,27 @@ import type {TimeScale} from '../../base/time_scale';
 import type {CanvasColors} from '../../public/canvas_colors';
 import type {
   Overlay,
+  OverlayInteractionContext,
+  OverlayInteractionZone,
   OverlayPointerEvent,
   TrackBounds,
 } from '../../public/track';
 import type {TrackNode} from '../../public/workspace';
-import {type AnnotationStore, normalizeColor} from './model';
+import {type Annotation, type AnnotationStore, normalizeColor} from './model';
 import {
   type ResolvedTrackY,
   resolveArea,
   resolvePoint,
   resolveTrackY,
 } from './anchor';
-import {bboxOf, type RectBounds} from './geometry';
+import {
+  bboxOf,
+  computeQuadraticControlPoint,
+  evaluateQuadraticBezier,
+  quadraticBezierEndAngle,
+  type RectBounds,
+  sampleQuadraticBezier,
+} from './geometry';
 import type {AnnotationGeometry, ToolController} from './tools';
 
 export type AnchorStatus = 'exact' | 'degraded' | 'unanchored';
@@ -69,6 +78,22 @@ export function colorWithAlpha(color: string, alpha: number): string {
     }
   }
   return color;
+}
+
+export function getAnnotationFillStyle(
+  annotation: Annotation,
+  defaultAlpha: number,
+): string {
+  if (annotation.fillColor === 'transparent') {
+    return 'rgba(0, 0, 0, 0)';
+  }
+  const baseFill = annotation.fillColor ?? annotation.color;
+  const alpha =
+    annotation.fillOpacity ??
+    (annotation.fillColor !== undefined
+      ? Math.min(0.45, defaultAlpha * 1.8)
+      : defaultAlpha);
+  return colorWithAlpha(baseFill, alpha);
 }
 
 function truncateText(text: string, maxLength: number): string {
@@ -129,6 +154,11 @@ export class AnnotationsOverlay implements Overlay {
   private readonly store: AnnotationStore;
   private readonly tools: ToolController;
   private readonly trackExists: (uri: string) => boolean;
+  private readonly geometriesByRoot = new WeakMap<
+    TrackNode,
+    Map<string, AnnotationGeometry>
+  >();
+  private readonly mergedGeometries = new Map<string, AnnotationGeometry>();
   private renderedAnnotationInfo = new Map<string, RenderedAnnotationInfo>();
 
   constructor(
@@ -139,6 +169,12 @@ export class AnnotationsOverlay implements Overlay {
     this.store = store;
     this.tools = tools;
     this.trackExists = options?.trackExists ?? (() => false);
+    this.tools.setGeometryProvider((id?: string, targetRoot?: TrackNode) => {
+      const map =
+        (targetRoot && this.geometriesByRoot.get(targetRoot)) ??
+        this.mergedGeometries;
+      return id ? map.get(id) : map;
+    });
   }
 
   getCursor(): string | undefined {
@@ -146,7 +182,51 @@ export class AnnotationsOverlay implements Overlay {
   }
 
   isInteractive(): boolean {
-    return this.tools.isInteractive();
+    return this.tools.isInteractive() && this.tools.tool !== 'select';
+  }
+
+  getInteractionZones(
+    ctx: OverlayInteractionContext,
+  ): ReadonlyArray<OverlayInteractionZone> {
+    const rootGeoms = this.geometriesByRoot.get(ctx.rootNode);
+    if (!rootGeoms) {
+      return [];
+    }
+    if (this.tools.drawingMode && this.tools.tool !== 'select') {
+      return [];
+    }
+
+    const zones: OverlayInteractionZone[] = [];
+    for (const geom of rootGeoms.values()) {
+      if (this.store.isHidden(geom.id)) {
+        continue;
+      }
+      if (geom.kind === 'arrow' && geom.curveMidpoint !== undefined) {
+        zones.push({
+          id: `arrow-curve:${geom.id}`,
+          area: {
+            x: geom.curveMidpoint.x - 8,
+            y: geom.curveMidpoint.y - 8,
+            width: 16,
+            height: 16,
+          },
+          cursor: 'grab',
+        });
+      }
+      const width = Math.max(8, geom.bbox.width);
+      const height = Math.max(8, geom.bbox.height);
+      zones.push({
+        id: `annotation:${geom.id}`,
+        area: {
+          x: geom.bbox.left,
+          y: geom.bbox.top,
+          width,
+          height,
+        },
+        cursor: 'move',
+      });
+    }
+    return zones;
   }
 
   onPointerDown(event: OverlayPointerEvent): void {
@@ -223,7 +303,6 @@ export class AnnotationsOverlay implements Overlay {
 
             if (area === undefined) {
               if (anyExists) {
-                // Exists in workspace (e.g. in the other tree), skip drawing in this tree
                 if (this.renderedAnnotationInfo.has(annotation.id)) {
                   nextRenderedInfo.set(
                     annotation.id,
@@ -302,9 +381,20 @@ export class AnnotationsOverlay implements Overlay {
               memoResolveTrackY,
             );
 
+            const labelText = truncateText(
+              annotation.title ?? annotation.text,
+              50,
+            );
+            const fontSize = annotation.fontSize ?? 12;
+            const fontFamily = annotation.fontFamily ?? 'sans-serif';
+            ctx.font = `${fontSize}px ${fontFamily}`;
+            const textMetrics = ctx.measureText(labelText);
+            const padX = Math.max(6, Math.round(fontSize * 0.5));
+            const labelHeight = Math.max(18, Math.round(fontSize * 1.5));
+            const labelWidth = textMetrics.width + padX * 2;
+
             if (pointRes === undefined) {
               if (exists) {
-                // Exists in workspace (in the other tree), skip drawing in this tree
                 if (this.renderedAnnotationInfo.has(annotation.id)) {
                   nextRenderedInfo.set(
                     annotation.id,
@@ -323,10 +413,10 @@ export class AnnotationsOverlay implements Overlay {
                 bbox: {
                   left: posX,
                   top: 0,
-                  right: posX + 60,
-                  bottom: 20,
-                  width: 60,
-                  height: 20,
+                  right: posX + labelWidth,
+                  bottom: labelHeight,
+                  width: labelWidth,
+                  height: labelHeight,
                 },
               });
             } else {
@@ -336,15 +426,6 @@ export class AnnotationsOverlay implements Overlay {
                 status,
                 missing: [],
               });
-
-              const labelText = truncateText(
-                annotation.title ?? annotation.text,
-                50,
-              );
-              ctx.font = '12px sans-serif';
-              const textMetrics = ctx.measureText(labelText);
-              const labelWidth = textMetrics.width + 12;
-              const labelHeight = 18;
 
               geometriesMap.set(annotation.id, {
                 id: annotation.id,
@@ -420,7 +501,6 @@ export class AnnotationsOverlay implements Overlay {
             break;
           }
           case 'arrow': {
-            // Computed in pass 2 once bounding boxes of target annotations are resolved
             break;
           }
         }
@@ -438,14 +518,12 @@ export class AnnotationsOverlay implements Overlay {
           continue;
         }
 
-        // Skip annotations fully outside viewport horizontal bounds
         if (geometry.bbox.right < 0 || geometry.bbox.left > size.width) {
           continue;
         }
 
         if (info.status === 'unanchored') {
-          // Unanchored translucent vertical band
-          ctx.fillStyle = colorWithAlpha(annotation.color, 0.12);
+          ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
           ctx.fillRect(
             geometry.bbox.left,
             0,
@@ -475,7 +553,7 @@ export class AnnotationsOverlay implements Overlay {
 
         switch (annotation.kind) {
           case 'rect': {
-            ctx.fillStyle = colorWithAlpha(annotation.color, 0.12);
+            ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
             ctx.fillRect(
               geometry.bbox.left,
               geometry.bbox.top,
@@ -505,7 +583,7 @@ export class AnnotationsOverlay implements Overlay {
             const radiusX = Math.max(0, geometry.bbox.width / 2);
             const radiusY = Math.max(0, geometry.bbox.height / 2);
             ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
-            ctx.fillStyle = colorWithAlpha(annotation.color, 0.12);
+            ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
             ctx.fill();
             ctx.lineWidth = 2;
             ctx.strokeStyle = annotation.color;
@@ -520,6 +598,21 @@ export class AnnotationsOverlay implements Overlay {
           }
           case 'path': {
             if (geometry.polyline && geometry.polyline.length > 1) {
+              const hasCustomFill =
+                annotation.fillColor !== undefined &&
+                annotation.fillColor !== 'transparent';
+
+              if (hasCustomFill) {
+                ctx.beginPath();
+                ctx.moveTo(geometry.polyline[0].x, geometry.polyline[0].y);
+                for (let i = 1; i < geometry.polyline.length; i += 1) {
+                  ctx.lineTo(geometry.polyline[i].x, geometry.polyline[i].y);
+                }
+                ctx.lineWidth = 6;
+                ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
+                ctx.stroke();
+              }
+
               ctx.beginPath();
               ctx.moveTo(geometry.polyline[0].x, geometry.polyline[0].y);
               for (let i = 1; i < geometry.polyline.length; i += 1) {
@@ -542,10 +635,11 @@ export class AnnotationsOverlay implements Overlay {
               annotation.title ?? annotation.text,
               50,
             );
-            ctx.font = '12px sans-serif';
-            ctx.fillStyle = colorWithAlpha(annotation.color, 0.12);
-            ctx.strokeStyle = annotation.color;
-            ctx.lineWidth = 1;
+            const fontSize = annotation.fontSize ?? 12;
+            const fontFamily = annotation.fontFamily ?? 'sans-serif';
+            ctx.font = `${fontSize}px ${fontFamily}`;
+            const padX = Math.max(6, Math.round(fontSize * 0.5));
+
             drawRoundedRect(
               ctx,
               geometry.bbox.left,
@@ -554,13 +648,29 @@ export class AnnotationsOverlay implements Overlay {
               geometry.bbox.height,
               4,
             );
-            ctx.fill();
+
+            if (annotation.backgroundColor === 'transparent') {
+              // transparent: do not fill
+            } else if (annotation.backgroundColor !== undefined) {
+              ctx.fillStyle = colorWithAlpha(
+                annotation.backgroundColor,
+                annotation.fillOpacity ?? 0.85,
+              );
+              ctx.fill();
+            } else {
+              ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
+              ctx.fill();
+            }
+
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = annotation.color;
             ctx.stroke();
-            ctx.fillStyle = theme.COLOR_TEXT;
+
+            ctx.fillStyle = annotation.textColor ?? theme.COLOR_TEXT;
             ctx.textBaseline = 'middle';
             ctx.fillText(
               labelText,
-              geometry.bbox.left + 6,
+              geometry.bbox.left + padX,
               geometry.bbox.top + geometry.bbox.height / 2,
             );
             break;
@@ -620,7 +730,6 @@ export class AnnotationsOverlay implements Overlay {
             }
           }
         } else {
-          // Snap 'from' annotation bbox toward endPoint (or center of 'to' annotation)
           const targetGeomA = geometriesMap.get(annotation.from.id);
           if (targetGeomA !== undefined) {
             if (endPoint !== undefined) {
@@ -640,7 +749,6 @@ export class AnnotationsOverlay implements Overlay {
           }
         }
 
-        // Snap 'to' annotation bbox toward startPoint
         if (annotation.to.kind === 'annotation') {
           const targetGeomB = geometriesMap.get(annotation.to.id);
           if (targetGeomB !== undefined) {
@@ -653,7 +761,6 @@ export class AnnotationsOverlay implements Overlay {
         }
 
         if (startPoint === undefined || endPoint === undefined) {
-          // Check if endpoints exist in workspace
           const fromExists =
             annotation.from.kind === 'point'
               ? this.trackExists(annotation.from.point.trackUri)
@@ -664,7 +771,6 @@ export class AnnotationsOverlay implements Overlay {
               : this.store.get(annotation.to.id) !== undefined;
 
           if (fromExists && toExists) {
-            // Drawn in the other tree
             if (this.renderedAnnotationInfo.has(annotation.id)) {
               nextRenderedInfo.set(
                 annotation.id,
@@ -688,20 +794,113 @@ export class AnnotationsOverlay implements Overlay {
         });
 
         if (startPoint !== undefined && endPoint !== undefined) {
+          const curvature =
+            annotation.controlOffset?.normalPx ?? annotation.curvature ?? 0;
+          const alongFrac = annotation.controlOffset?.alongFrac ?? 0.5;
+
+          let curveMidpoint: Point2D;
+          let controlPoint: Point2D | undefined;
+          let sampledPolyline: Point2D[] | undefined;
+          let arrowBbox: RectBounds;
+          let arrowAngle: number;
+
+          if (Math.abs(curvature) > 0.5) {
+            controlPoint = computeQuadraticControlPoint(
+              startPoint,
+              endPoint,
+              curvature,
+              alongFrac,
+            );
+            curveMidpoint = evaluateQuadraticBezier(
+              startPoint,
+              controlPoint,
+              endPoint,
+              0.5,
+            );
+            sampledPolyline = sampleQuadraticBezier(
+              startPoint,
+              controlPoint,
+              endPoint,
+              16,
+            );
+            arrowBbox = bboxOf(sampledPolyline);
+            arrowAngle = quadraticBezierEndAngle(
+              startPoint,
+              controlPoint,
+              endPoint,
+            );
+          } else {
+            curveMidpoint = {
+              x: (startPoint.x + endPoint.x) / 2,
+              y: (startPoint.y + endPoint.y) / 2,
+            };
+            arrowBbox = bboxOf([startPoint, endPoint]);
+            arrowAngle = Math.atan2(
+              endPoint.y - startPoint.y,
+              endPoint.x - startPoint.x,
+            );
+          }
+
           geometriesMap.set(annotation.id, {
             id: annotation.id,
             kind: 'arrow',
-            bbox: bboxOf([startPoint, endPoint]),
+            bbox: arrowBbox,
             start: startPoint,
             end: endPoint,
+            ...(controlPoint !== undefined ? {control: controlPoint} : {}),
+            curveMidpoint,
+            ...(sampledPolyline !== undefined
+              ? {polyline: sampledPolyline}
+              : {}),
           });
 
-          const minX = Math.min(startPoint.x, endPoint.x);
-          const maxX = Math.max(startPoint.x, endPoint.x);
-          if (maxX >= 0 && minX <= size.width) {
+          if (arrowBbox.right >= 0 && arrowBbox.left <= size.width) {
+            const hasCustomFill =
+              annotation.fillColor !== undefined &&
+              annotation.fillColor !== 'transparent';
+
+            if (hasCustomFill) {
+              ctx.beginPath();
+              ctx.moveTo(startPoint.x, startPoint.y);
+              if (controlPoint !== undefined) {
+                if (typeof ctx.quadraticCurveTo === 'function') {
+                  ctx.quadraticCurveTo(
+                    controlPoint.x,
+                    controlPoint.y,
+                    endPoint.x,
+                    endPoint.y,
+                  );
+                } else {
+                  for (const pt of sampledPolyline!) {
+                    ctx.lineTo(pt.x, pt.y);
+                  }
+                }
+              } else {
+                ctx.lineTo(endPoint.x, endPoint.y);
+              }
+              ctx.lineWidth = 6;
+              ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
+              ctx.stroke();
+            }
+
             ctx.beginPath();
             ctx.moveTo(startPoint.x, startPoint.y);
-            ctx.lineTo(endPoint.x, endPoint.y);
+            if (controlPoint !== undefined) {
+              if (typeof ctx.quadraticCurveTo === 'function') {
+                ctx.quadraticCurveTo(
+                  controlPoint.x,
+                  controlPoint.y,
+                  endPoint.x,
+                  endPoint.y,
+                );
+              } else {
+                for (const pt of sampledPolyline!) {
+                  ctx.lineTo(pt.x, pt.y);
+                }
+              }
+            } else {
+              ctx.lineTo(endPoint.x, endPoint.y);
+            }
             ctx.lineWidth = 2;
             ctx.strokeStyle = annotation.color;
             if (status === 'degraded') {
@@ -713,29 +912,40 @@ export class AnnotationsOverlay implements Overlay {
             ctx.setLineDash([]);
 
             // Draw arrowhead at endPoint
-            const angle = Math.atan2(
-              endPoint.y - startPoint.y,
-              endPoint.x - startPoint.x,
-            );
             const headLength = 10;
             const headAngle = Math.PI / 6;
+            const leftArrowPt = {
+              x: endPoint.x - headLength * Math.cos(arrowAngle - headAngle),
+              y: endPoint.y - headLength * Math.sin(arrowAngle - headAngle),
+            };
+            const rightArrowPt = {
+              x: endPoint.x - headLength * Math.cos(arrowAngle + headAngle),
+              y: endPoint.y - headLength * Math.sin(arrowAngle + headAngle),
+            };
+
+            if (hasCustomFill) {
+              ctx.beginPath();
+              ctx.moveTo(endPoint.x, endPoint.y);
+              ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
+              ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
+              ctx.closePath();
+              ctx.fillStyle = getAnnotationFillStyle(annotation, 0.4);
+              ctx.fill();
+            }
+
             ctx.beginPath();
             ctx.moveTo(endPoint.x, endPoint.y);
-            ctx.lineTo(
-              endPoint.x - headLength * Math.cos(angle - headAngle),
-              endPoint.y - headLength * Math.sin(angle - headAngle),
-            );
+            ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
             ctx.moveTo(endPoint.x, endPoint.y);
-            ctx.lineTo(
-              endPoint.x - headLength * Math.cos(angle + headAngle),
-              endPoint.y - headLength * Math.sin(angle + headAngle),
-            );
+            ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = annotation.color;
             ctx.stroke();
           }
         }
       }
 
-      // Pass 4: Draw selection outline and corner handles
+      // Pass 4: Draw selection outline and handles
       const selectedId = this.store.selectedId;
       if (selectedId !== undefined) {
         const selectedGeom = geometriesMap.get(selectedId);
@@ -764,6 +974,65 @@ export class AnnotationsOverlay implements Overlay {
               ctx.fillRect(corner.x - 3, corner.y - 3, 6, 6);
               ctx.strokeRect(corner.x - 3, corner.y - 3, 6, 6);
             }
+          } else if (
+            selectedGeom.kind === 'arrow' &&
+            selectedGeom.curveMidpoint !== undefined
+          ) {
+            ctx.beginPath();
+            if (typeof ctx.arc === 'function') {
+              ctx.arc(
+                selectedGeom.curveMidpoint.x,
+                selectedGeom.curveMidpoint.y,
+                4.5,
+                0,
+                Math.PI * 2,
+              );
+            } else {
+              ctx.rect(
+                selectedGeom.curveMidpoint.x - 4,
+                selectedGeom.curveMidpoint.y - 4,
+                8,
+                8,
+              );
+            }
+            ctx.fillStyle = theme.COLOR_ACCENT;
+            ctx.fill();
+            ctx.strokeStyle = theme.COLOR_BACKGROUND;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            if (selectedGeom.start !== undefined) {
+              ctx.fillStyle = theme.COLOR_BACKGROUND;
+              ctx.strokeStyle = theme.COLOR_ACCENT;
+              ctx.fillRect(
+                selectedGeom.start.x - 3,
+                selectedGeom.start.y - 3,
+                6,
+                6,
+              );
+              ctx.strokeRect(
+                selectedGeom.start.x - 3,
+                selectedGeom.start.y - 3,
+                6,
+                6,
+              );
+            }
+            if (selectedGeom.end !== undefined) {
+              ctx.fillStyle = theme.COLOR_BACKGROUND;
+              ctx.strokeStyle = theme.COLOR_ACCENT;
+              ctx.fillRect(
+                selectedGeom.end.x - 3,
+                selectedGeom.end.y - 3,
+                6,
+                6,
+              );
+              ctx.strokeRect(
+                selectedGeom.end.x - 3,
+                selectedGeom.end.y - 3,
+                6,
+                6,
+              );
+            }
           }
         }
       }
@@ -772,6 +1041,54 @@ export class AnnotationsOverlay implements Overlay {
       const preview = this.tools.preview;
       if (preview !== undefined) {
         switch (preview.kind) {
+          case 'arrow-curve': {
+            ctx.beginPath();
+            ctx.moveTo(preview.start.x, preview.start.y);
+            if (typeof ctx.quadraticCurveTo === 'function') {
+              ctx.quadraticCurveTo(
+                preview.control.x,
+                preview.control.y,
+                preview.end.x,
+                preview.end.y,
+              );
+            } else {
+              const sampled = sampleQuadraticBezier(
+                preview.start,
+                preview.control,
+                preview.end,
+                16,
+              );
+              for (const pt of sampled) {
+                ctx.lineTo(pt.x, pt.y);
+              }
+            }
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = preview.color;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            const angle = quadraticBezierEndAngle(
+              preview.start,
+              preview.control,
+              preview.end,
+            );
+            const headLength = 10;
+            const headAngle = Math.PI / 6;
+            ctx.beginPath();
+            ctx.moveTo(preview.end.x, preview.end.y);
+            ctx.lineTo(
+              preview.end.x - headLength * Math.cos(angle - headAngle),
+              preview.end.y - headLength * Math.sin(angle - headAngle),
+            );
+            ctx.moveTo(preview.end.x, preview.end.y);
+            ctx.lineTo(
+              preview.end.x - headLength * Math.cos(angle + headAngle),
+              preview.end.y - headLength * Math.sin(angle + headAngle),
+            );
+            ctx.stroke();
+            break;
+          }
           case 'rect': {
             ctx.fillStyle = colorWithAlpha(preview.color, 0.12);
             ctx.fillRect(
@@ -850,7 +1167,9 @@ export class AnnotationsOverlay implements Overlay {
             break;
           }
           case 'move': {
-            const targetGeom = geometriesMap.get(preview.annotationId);
+            const targetGeom =
+              geometriesMap.get(preview.annotationId) ??
+              this.mergedGeometries.get(preview.annotationId);
             if (targetGeom !== undefined) {
               const shiftedLeft = targetGeom.bbox.left + preview.deltaX;
               const shiftedTop = targetGeom.bbox.top + preview.deltaY;
@@ -870,10 +1189,31 @@ export class AnnotationsOverlay implements Overlay {
         }
       }
 
-      this.renderedAnnotationInfo = nextRenderedInfo;
-      this.tools.setGeometryProvider((id?: string) =>
-        id ? geometriesMap.get(id) : geometriesMap,
-      );
+      for (const key of this.mergedGeometries.keys()) {
+        if (this.store.get(key) === undefined) {
+          this.mergedGeometries.delete(key);
+        }
+      }
+      for (const key of this.renderedAnnotationInfo.keys()) {
+        if (this.store.get(key) === undefined) {
+          this.renderedAnnotationInfo.delete(key);
+        }
+      }
+
+      this.geometriesByRoot.set(rootNode, geometriesMap);
+      for (const [id, geom] of geometriesMap.entries()) {
+        this.mergedGeometries.set(id, geom);
+      }
+      for (const [id, info] of nextRenderedInfo.entries()) {
+        this.renderedAnnotationInfo.set(id, info);
+      }
+
+      this.tools.setGeometryProvider((id?: string, targetRoot?: TrackNode) => {
+        const map =
+          (targetRoot && this.geometriesByRoot.get(targetRoot)) ??
+          this.mergedGeometries;
+        return id ? map.get(id) : map;
+      });
     } finally {
       ctx.restore();
     }

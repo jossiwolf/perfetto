@@ -16,12 +16,18 @@ import {describe, expect, test} from 'vitest';
 import type {Point2D} from '../../base/geom';
 import {
   bboxOf,
+  computeQuadraticControlPoint,
+  curvatureFromMidpoint,
   distancePointToSegment,
+  evaluateQuadraticBezier,
   hitTestEllipse,
   hitTestPolyline,
+  hitTestQuadraticBezier,
   hitTestRect,
   hitTestSegment,
+  quadraticBezierEndAngle,
   recognizeShape,
+  sampleQuadraticBezier,
   simplifyPath,
 } from './geometry';
 
@@ -277,6 +283,125 @@ describe('geometry.ts', () => {
       expect(hitTestPolyline({x: 75, y: 25}, poly, 2)).toBe(true);
       expect(hitTestPolyline({x: 50, y: 0}, poly, 2)).toBe(false);
       expect(hitTestPolyline({x: 0, y: 0}, [], 2)).toBe(false);
+    });
+  });
+
+  describe('Quadratic Bezier geometry', () => {
+    const start: Point2D = {x: 0, y: 0};
+    const end: Point2D = {x: 100, y: 0};
+
+    test('computeQuadraticControlPoint computes apex at exact distance curvature at t = 0.5', () => {
+      const curvature = 25;
+      const control = computeQuadraticControlPoint(start, end, curvature, 0.5);
+
+      // For chord (0,0) -> (100,0), unit normal is (0, 1)
+      // Control point is at (50, 2 * 25) = (50, 50)
+      expect(control.x).toBeCloseTo(50);
+      expect(control.y).toBeCloseTo(50);
+
+      // Apex B(0.5) must be at distance curvature (25) from midpoint (50, 0)
+      const apex = evaluateQuadraticBezier(start, control, end, 0.5);
+      expect(apex.x).toBeCloseTo(50);
+      expect(apex.y).toBeCloseTo(25);
+    });
+
+    test('computeQuadraticControlPoint handles degenerate chord length', () => {
+      const degenerateStart = {x: 10, y: 10};
+      const degenerateEnd = {x: 10, y: 10};
+      const control = computeQuadraticControlPoint(
+        degenerateStart,
+        degenerateEnd,
+        20,
+      );
+      // nx = 0, ny = -1 => y = 10 - 20 * 2 = -30
+      expect(control.x).toBeCloseTo(10);
+      expect(control.y).toBeCloseTo(-30);
+    });
+
+    test('evaluateQuadraticBezier evaluates boundaries and midpoint accurately', () => {
+      const control: Point2D = {x: 50, y: 40};
+      expect(evaluateQuadraticBezier(start, control, end, 0)).toEqual(start);
+      expect(evaluateQuadraticBezier(start, control, end, 1)).toEqual(end);
+
+      const mid = evaluateQuadraticBezier(start, control, end, 0.5);
+      expect(mid.x).toBeCloseTo(50);
+      expect(mid.y).toBeCloseTo(20);
+    });
+
+    test('quadraticBezierEndAngle returns tangent angle at t = 1', () => {
+      const controlStraight: Point2D = {x: 50, y: 0};
+      expect(quadraticBezierEndAngle(start, controlStraight, end)).toBeCloseTo(
+        0,
+      );
+
+      // Control point (100, -50), end (100, 0) => end - control is (0, 50) -> angle PI/2
+      const controlVertical: Point2D = {x: 100, y: -50};
+      expect(quadraticBezierEndAngle(start, controlVertical, end)).toBeCloseTo(
+        Math.PI / 2,
+      );
+
+      // Fallback when control == end
+      expect(quadraticBezierEndAngle(start, end, end)).toBeCloseTo(0);
+    });
+
+    test('sampleQuadraticBezier samples numSegments + 1 points', () => {
+      const control: Point2D = {x: 50, y: 50};
+      const samples = sampleQuadraticBezier(start, control, end, 8);
+      expect(samples.length).toBe(9);
+      expect(samples[0].x).toBeCloseTo(0);
+      expect(samples[0].y).toBeCloseTo(0);
+      expect(samples[8].x).toBeCloseTo(100);
+      expect(samples[8].y).toBeCloseTo(0);
+      expect(samples[4].y).toBeCloseTo(25);
+    });
+
+    test('curvatureFromMidpoint inverts computeQuadraticControlPoint and clamps alongFrac', () => {
+      const targetMidpoint: Point2D = {x: 50, y: 30};
+      const {curvature, alongFrac} = curvatureFromMidpoint(
+        start,
+        end,
+        targetMidpoint,
+      );
+      expect(curvature).toBeCloseTo(30);
+      expect(alongFrac).toBeCloseTo(0.5);
+
+      // Clamps alongFrac to [0.15, 0.85]
+      const farLeftMidpoint: Point2D = {x: 5, y: 30};
+      const leftRes = curvatureFromMidpoint(start, end, farLeftMidpoint);
+      expect(leftRes.alongFrac).toBeCloseTo(0.15);
+
+      const farRightMidpoint: Point2D = {x: 95, y: 30};
+      const rightRes = curvatureFromMidpoint(start, end, farRightMidpoint);
+      expect(rightRes.alongFrac).toBeCloseTo(0.85);
+
+      // Degenerate chord fallback
+      const degenRes = curvatureFromMidpoint(
+        {x: 10, y: 10},
+        {x: 10, y: 10},
+        {x: 10, y: 25},
+      );
+      expect(degenRes.alongFrac).toBe(0.5);
+      expect(degenRes.curvature).toBe(-15);
+    });
+
+    test('hitTestQuadraticBezier detects proximity to curve', () => {
+      const curvature = 40;
+      const control = computeQuadraticControlPoint(start, end, curvature, 0.5);
+
+      // Midpoint apex is at (50, 40)
+      expect(
+        hitTestQuadraticBezier({x: 50, y: 40}, start, control, end, 5),
+      ).toBe(true);
+
+      // Chord midpoint (50, 0) is 40px away, with 5px tolerance it should fail
+      expect(
+        hitTestQuadraticBezier({x: 50, y: 0}, start, control, end, 5),
+      ).toBe(false);
+
+      // Far outside
+      expect(
+        hitTestQuadraticBezier({x: 50, y: 100}, start, control, end, 5),
+      ).toBe(false);
     });
   });
 });

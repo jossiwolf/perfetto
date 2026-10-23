@@ -406,6 +406,12 @@ describe('model.ts', () => {
       expect(normalizeColor('unknown-color')).toBe('unknown-color');
     });
 
+    test('normalizes transparent to transparent', () => {
+      expect(normalizeColor('transparent')).toBe('transparent');
+      expect(normalizeColor('  TRANSPARENT  ')).toBe('transparent');
+      expect(normalizeColor('Transparent')).toBe('transparent');
+    });
+
     test('AnnotationStore normalizes color on add and update', () => {
       const store = new AnnotationStore();
       const added = store.add({
@@ -422,6 +428,191 @@ describe('model.ts', () => {
       const updated = store.update(added.id, {color: '#f00'});
       expect(updated?.color).toBe('#ff0000');
     });
+
+    test('AnnotationStore normalizes fillColor, textColor, backgroundColor and allows clearing', () => {
+      const store = new AnnotationStore();
+      const added = store.add({
+        kind: 'label',
+        color: 'blue',
+        fillColor: 'transparent',
+        textColor: 'red',
+        backgroundColor: 'yellow',
+        text: 'hello',
+        position: {ts: Time.fromRaw(0n), trackUri: 't', yFrac: 0.5},
+      });
+      expect(added.fillColor).toBe('transparent');
+      const labelAdded = store.get(added.id) as any;
+      expect(labelAdded.textColor).toBe('#e53935');
+      expect(labelAdded.backgroundColor).toBe('#fdd835');
+
+      const updated = store.update(added.id, {
+        fillColor: undefined,
+        textColor: '#00ff00',
+      });
+      expect(updated?.fillColor).toBeUndefined();
+      expect((updated as any)?.textColor).toBe('#00ff00');
+    });
+  });
+
+  describe('changeKind', () => {
+    test('returns undefined for non-existent annotation', () => {
+      const store = new AnnotationStore();
+      expect(store.changeKind('missing', 'rect')).toBeUndefined();
+    });
+
+    test('returns existing unmodified if newKind is identical', () => {
+      const store = new AnnotationStore();
+      const created = store.add({
+        id: 'r1',
+        kind: 'rect',
+        color: '#ff0000',
+        anchor: {
+          start: Time.fromRaw(100n),
+          end: Time.fromRaw(200n),
+          trackUris: ['t1'],
+        },
+      });
+      const result = store.changeKind('r1', 'rect');
+      expect(result).toBe(created);
+      expect(store.canUndo).toBe(true); // only 1 add on undo stack
+      expect(store.undo()).toBe(true);
+      expect(store.list().length).toBe(0);
+    });
+
+    test('converts rect -> ellipse -> label -> arrow -> path -> rect correctly with undo/redo', () => {
+      let currentTime = 1000;
+      const store = new AnnotationStore({now: () => currentTime});
+
+      const initial = store.add({
+        id: 'shape-1',
+        kind: 'rect',
+        title: 'My Shape',
+        description: 'Test shape',
+        color: '#123456',
+        fillColor: 'red',
+        fillOpacity: 0.8,
+        author: 'Tester',
+        anchor: {
+          start: Time.fromRaw(100n),
+          end: Time.fromRaw(500n),
+          trackUris: ['t_start', 't_end'],
+          trackNames: ['Track Start', 'Track End'],
+        },
+      });
+
+      expect(initial.fillColor).toBe('#e53935');
+
+      // 1. Rect -> Ellipse
+      currentTime = 2000;
+      const asEllipse = store.changeKind('shape-1', 'ellipse');
+      expect(asEllipse?.kind).toBe('ellipse');
+      expect(asEllipse?.id).toBe('shape-1');
+      expect(asEllipse?.title).toBe('My Shape');
+      expect(asEllipse?.description).toBe('Test shape');
+      expect(asEllipse?.color).toBe('#123456');
+      expect(asEllipse?.fillColor).toBe('#e53935');
+      expect(asEllipse?.fillOpacity).toBe(0.8);
+      expect(asEllipse?.author).toBe('Tester');
+      expect(asEllipse?.updatedAt).toBe(2000);
+      if (asEllipse?.kind === 'ellipse') {
+        expect(asEllipse.anchor.start).toEqual(Time.fromRaw(100n));
+        expect(asEllipse.anchor.end).toEqual(Time.fromRaw(500n));
+        expect(asEllipse.anchor.trackUris).toEqual(['t_start', 't_end']);
+        expect(asEllipse.anchor.trackNames).toEqual([
+          'Track Start',
+          'Track End',
+        ]);
+      }
+
+      // 2. Ellipse -> Label
+      currentTime = 3000;
+      const asLabel = store.changeKind('shape-1', 'label');
+      expect(asLabel?.kind).toBe('label');
+      if (asLabel?.kind === 'label') {
+        expect(asLabel.text).toBe('My Shape'); // uses existing title
+        expect(asLabel.position.ts).toEqual(Time.fromRaw(100n));
+        expect(asLabel.position.trackUri).toBe('t_start');
+        expect(asLabel.position.trackName).toBe('Track Start');
+      }
+
+      // 3. Label -> Arrow
+      currentTime = 4000;
+      const asArrow = store.changeKind('shape-1', 'arrow');
+      expect(asArrow?.kind).toBe('arrow');
+      if (asArrow?.kind === 'arrow') {
+        expect(asArrow.from.kind).toBe('point');
+        expect(asArrow.to.kind).toBe('point');
+        if (asArrow.from.kind === 'point' && asArrow.to.kind === 'point') {
+          expect(asArrow.from.point.ts).toEqual(Time.fromRaw(100n));
+          expect(asArrow.to.point.ts).toEqual(
+            Time.add(Time.fromRaw(100n), Time.fromRaw(10_000_000n)),
+          );
+        }
+      }
+
+      // 4. Arrow -> Path
+      currentTime = 5000;
+      const asPath = store.changeKind('shape-1', 'path');
+      expect(asPath?.kind).toBe('path');
+      if (asPath?.kind === 'path') {
+        expect(asPath.points.length).toBe(2);
+        expect(asPath.points[0].ts).toEqual(Time.fromRaw(100n));
+      }
+
+      // 5. Path -> Rect
+      currentTime = 6000;
+      const asRectAgain = store.changeKind('shape-1', 'rect');
+      expect(asRectAgain?.kind).toBe('rect');
+
+      // Test Undo stack rewinds through kinds
+      expect(store.undo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('path');
+      expect(store.undo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('arrow');
+      expect(store.undo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('label');
+      expect(store.undo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('ellipse');
+      expect(store.undo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('rect');
+
+      // Test Redo
+      expect(store.redo()).toBe(true);
+      expect(store.get('shape-1')?.kind).toBe('ellipse');
+    });
+
+    test('converts arrow referencing another annotation and handles fallback', () => {
+      const store = new AnnotationStore();
+      store.add({
+        id: 'target-rect',
+        kind: 'rect',
+        color: '#ff0000',
+        anchor: {
+          start: Time.fromRaw(1000n),
+          end: Time.fromRaw(2000n),
+          trackUris: ['cpu_0'],
+        },
+      });
+
+      store.add({
+        id: 'arrow-ref',
+        kind: 'arrow',
+        color: '#00ff00',
+        from: {kind: 'annotation', id: 'target-rect'},
+        to: {
+          kind: 'point',
+          point: {ts: Time.fromRaw(3000n), trackUri: 'cpu_1', yFrac: 0.5},
+        },
+      });
+
+      const converted = store.changeKind('arrow-ref', 'rect');
+      expect(converted?.kind).toBe('rect');
+      if (converted?.kind === 'rect') {
+        expect(converted.anchor.start).toEqual(Time.fromRaw(1000n));
+        expect(converted.anchor.end).toEqual(Time.fromRaw(3000n));
+        expect(converted.anchor.trackUris).toEqual(['cpu_0', 'cpu_1']);
+      }
+    });
   });
 
   describe('toSerialized and fromSerialized round-trip', () => {
@@ -432,6 +623,8 @@ describe('model.ts', () => {
           kind: 'rect',
           title: 'Extreme Timestamps',
           color: '#123456',
+          fillColor: '#654321',
+          fillOpacity: 0.5,
           createdAt: 1000,
           updatedAt: 2000,
           anchor: {
@@ -445,6 +638,10 @@ describe('model.ts', () => {
           id: 'label-roundtrip',
           kind: 'label',
           color: '#abcdef',
+          fontFamily: 'monospace',
+          fontSize: 20,
+          textColor: '#111111',
+          backgroundColor: '#eeeeee',
           createdAt: 3000,
           updatedAt: 4000,
           text: 'Hello Label',
@@ -459,6 +656,8 @@ describe('model.ts', () => {
           id: 'arrow-roundtrip',
           kind: 'arrow',
           color: '#654321',
+          curvature: 250,
+          controlOffset: {alongFrac: 0.6, normalPx: -50},
           createdAt: 5000,
           updatedAt: 6000,
           from: {kind: 'annotation', id: 'rect-roundtrip'},

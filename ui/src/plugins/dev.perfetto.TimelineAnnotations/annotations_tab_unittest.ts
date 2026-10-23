@@ -21,6 +21,7 @@ import {AnnotationsOverlay} from './overlay';
 import {ToolController, TOOL_KINDS} from './tools';
 import {
   AnnotationsTab,
+  ColorSwatches,
   PALETTE_COLORS,
   getToolIcon,
   getToolLabel,
@@ -63,7 +64,7 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     );
   });
 
-  test('clicking a tool button switches the active tool', () => {
+  test('clicking a tool button switches the active tool and activates drawing mode', () => {
     const store = new AnnotationStore();
     let redrawCalled = false;
     const tools = new ToolController(store, {
@@ -85,10 +86,69 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     penButton?.click();
 
     expect(tools.tool).toBe('pen');
+    expect(tools.drawingMode).toBe(true);
     expect(redrawCalled).toBe(true);
   });
 
-  test('renders annotations list with swatches and no select dropdowns in rows', () => {
+  test('clicking active creation tool button while drawing mode is on toggles it off', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+    const trace = {} as Trace;
+    const tab = new AnnotationsTab(trace, store, tools, overlay);
+
+    tools.setTool('rect');
+    tools.setDrawingMode(true);
+
+    const root = document.createElement('div');
+    m.render(root, tab.render());
+
+    const rectButton = root.querySelector(
+      '.pf-timeline-annotations__tools button[data-tool="rect"]',
+    ) as HTMLButtonElement | null;
+    expect(rectButton).not.toBeNull();
+    rectButton?.click();
+
+    expect(tools.drawingMode).toBe(false);
+  });
+
+  test('toolbar has no "Tool:" text and right-side buttons are ordered Clear all, Import, Export', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+    const trace = {} as Trace;
+    const tab = new AnnotationsTab(trace, store, tools, overlay);
+
+    const root = document.createElement('div');
+    m.render(root, tab.render());
+
+    // Check that "Tool:" label is removed
+    const labels = Array.from(
+      root.querySelectorAll('.pf-timeline-annotations__label'),
+    );
+    const hasToolLabel = labels.some(
+      (el) => el.textContent?.trim() === 'Tool:',
+    );
+    expect(hasToolLabel).toBe(false);
+
+    // Check right-side button order: Clear all, Import, Export
+    const actionButtons = Array.from(
+      root.querySelectorAll('.pf-timeline-annotations__group--right button'),
+    );
+    const labelsInOrder = actionButtons
+      .map((btn) => {
+        const text = btn.textContent ?? '';
+        if (text.includes('Clear all')) return 'Clear all';
+        if (text.includes('Import')) return 'Import';
+        if (text.includes('Export')) return 'Export';
+        return '';
+      })
+      .filter(Boolean);
+
+    expect(labelsInOrder).toEqual(['Clear all', 'Import', 'Export']);
+  });
+
+  test('renders annotations list with compact color trigger and no select dropdowns in rows', () => {
     const store = new AnnotationStore();
     const tools = new ToolController(store, {requestRedraw: () => {}});
     const overlay = new AnnotationsOverlay(store, tools);
@@ -129,44 +189,32 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     const selectElements = root.querySelectorAll('select');
     expect(selectElements.length).toBe(0);
 
-    // Each row renders color swatches
-    const rowSwatches = root.querySelectorAll(
-      '.pf-timeline-annotations-item .pf-timeline-annotations__swatches',
+    // Each row renders a compact color trigger button
+    const rowTriggers = root.querySelectorAll(
+      '.pf-timeline-annotations-item .pf-timeline-annotations__color-trigger',
     );
-    expect(rowSwatches.length).toBe(2);
+    expect(rowTriggers.length).toBe(2);
 
-    // Kind icon has title tooltip naming the kind
+    // Kind icon has title tooltip naming the kind and change type action
     const firstIcon = root.querySelector(
       '.pf-timeline-annotations-item .pf-timeline-annotations-icon',
     );
     expect(firstIcon?.getAttribute('title')).toContain('Rect');
+    expect(firstIcon?.getAttribute('title')).toContain('change type');
   });
 
   test('renders custom color in swatch with active state and input[type=color]', () => {
-    const store = new AnnotationStore();
-    const tools = new ToolController(store, {requestRedraw: () => {}});
-    const overlay = new AnnotationsOverlay(store, tools);
-    const trace = {} as Trace;
-    const tab = new AnnotationsTab(trace, store, tools, overlay);
-
-    store.add({
-      id: 'rect_custom',
-      kind: 'rect',
-      color: '#123456',
-      anchor: {
-        start: Time.fromRaw(100n),
-        end: Time.fromRaw(200n),
-        trackUris: ['track_1'],
-      },
-    });
-
     const root = document.createElement('div');
-    expect(() => {
-      m.render(root, tab.render());
-    }).not.toThrow();
+    m.render(
+      root,
+      m(ColorSwatches, {
+        value: '#123456',
+        onChange: () => {},
+      }),
+    );
 
     const customSwatch = root.querySelector(
-      '.pf-timeline-annotations-item .pf-timeline-annotations__swatch--custom',
+      '.pf-timeline-annotations__swatch--custom',
     );
     expect(customSwatch).not.toBeNull();
     expect(
@@ -176,7 +224,7 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     ).toBe(true);
 
     const colorInput = root.querySelector(
-      '.pf-timeline-annotations-item input[type=color]',
+      'input[type=color]',
     ) as HTMLInputElement | null;
     expect(colorInput).not.toBeNull();
     expect(colorInput?.value).toBe('#123456');
@@ -188,6 +236,7 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     const overlay = new AnnotationsOverlay(store, tools);
     const trace = {} as Trace;
     const tab = new AnnotationsTab(trace, store, tools, overlay);
+    expect(tab).toBeDefined();
 
     store.add({
       id: 'rect_to_change',
@@ -200,18 +249,23 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
       },
     });
 
-    const root = document.createElement('div');
-    m.render(root, tab.render());
-
-    // Target the green palette swatch in the row
     const greenColor = PALETTE_COLORS.find(
       (paletteColor) => paletteColor.label === 'Green',
     );
     expect(greenColor).toBeDefined();
 
-    const swatches = root.querySelectorAll(
-      '.pf-timeline-annotations-item .pf-timeline-annotations__swatch',
+    const root = document.createElement('div');
+    m.render(
+      root,
+      m(ColorSwatches, {
+        value: store.get('rect_to_change')!.color,
+        onChange: (color: string) => {
+          store.update('rect_to_change', {color});
+        },
+      }),
     );
+
+    const swatches = root.querySelectorAll('.pf-timeline-annotations__swatch');
     const greenSwatch = Array.from(swatches).find(
       (swatchElement) =>
         (swatchElement as HTMLElement).title === greenColor?.label,
@@ -223,25 +277,28 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     expect(store.get('rect_to_change')?.color).toBe(greenColor?.value);
   });
 
-  test('toolbar swatch click updates tool color', () => {
+  test('ColorSwatches updates tool color', () => {
     const store = new AnnotationStore();
     const tools = new ToolController(store, {requestRedraw: () => {}});
-    const overlay = new AnnotationsOverlay(store, tools);
-    const trace = {} as Trace;
-    const tab = new AnnotationsTab(trace, store, tools, overlay);
-
-    const root = document.createElement('div');
-    m.render(root, tab.render());
 
     const blueColor = PALETTE_COLORS.find(
       (paletteColor) => paletteColor.label === 'Blue',
     );
     expect(blueColor).toBeDefined();
 
-    const toolbarSwatches = root.querySelectorAll(
-      '.pf-timeline-annotations__toolbar .pf-timeline-annotations__swatch',
+    const root = document.createElement('div');
+    m.render(
+      root,
+      m(ColorSwatches, {
+        value: tools.color,
+        onChange: (color: string) => {
+          tools.setColor(color);
+        },
+      }),
     );
-    const blueSwatch = Array.from(toolbarSwatches).find(
+
+    const swatches = root.querySelectorAll('.pf-timeline-annotations__swatch');
+    const blueSwatch = Array.from(swatches).find(
       (swatchElement) =>
         (swatchElement as HTMLElement).title === blueColor?.label,
     ) as HTMLElement | undefined;
@@ -271,14 +328,7 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
   test('default tool color is in the palette and matches orange swatch', () => {
     const store = new AnnotationStore();
     const tools = new ToolController(store, {requestRedraw: () => {}});
-    const overlay = new AnnotationsOverlay(store, tools);
-    const trace = {} as Trace;
-    const tab = new AnnotationsTab(trace, store, tools, overlay);
 
-    const root = document.createElement('div');
-    m.render(root, tab.render());
-
-    // Assert tools.color is in PALETTE_COLORS
     const defaultPaletteMatch = PALETTE_COLORS.find(
       (paletteColor) =>
         normalizeColor(paletteColor.value).toLowerCase() ===
@@ -288,9 +338,17 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
     expect(defaultPaletteMatch?.label).toBe('Orange');
     expect(tools.color).toBe(PALETTE_COLORS[1].value);
 
-    // Assert that the orange palette swatch in the toolbar has the active class
+    const root = document.createElement('div');
+    m.render(
+      root,
+      m(ColorSwatches, {
+        value: tools.color,
+        onChange: () => {},
+      }),
+    );
+
     const activeSwatch = root.querySelector(
-      '.pf-timeline-annotations__toolbar .pf-timeline-annotations__swatch--active',
+      '.pf-timeline-annotations__swatch--active',
     ) as HTMLElement | null;
     expect(activeSwatch).not.toBeNull();
     expect(activeSwatch?.title).toBe('Orange');
@@ -299,5 +357,161 @@ describe('TimelineAnnotations: annotations_tab.ts', () => {
         'pf-timeline-annotations__swatch--custom',
       ),
     ).toBe(false);
+  });
+
+  test('clicking Clear all opens pane-blocking clear dialog and Confirm clear clears store', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+    const trace = {} as Trace;
+    const tab = new AnnotationsTab(trace, store, tools, overlay);
+
+    store.add({
+      id: 'rect_to_clear',
+      kind: 'rect',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const root = document.createElement('div');
+    m.render(root, tab.render());
+
+    // Initially no clear modal
+    expect(
+      root.querySelector('.pf-timeline-annotations-clear-overlay'),
+    ).toBeNull();
+
+    // Click Clear all button
+    const clearAllButton = Array.from(root.querySelectorAll('.pf-button')).find(
+      (btn) => btn.textContent?.includes('Clear all'),
+    ) as HTMLButtonElement | undefined;
+    expect(clearAllButton).toBeDefined();
+    clearAllButton?.click();
+
+    // Re-render
+    m.render(root, tab.render());
+
+    // Modal overlay and dialog are rendered
+    const overlayEl = root.querySelector(
+      '.pf-timeline-annotations-clear-overlay',
+    );
+    expect(overlayEl).not.toBeNull();
+    const dialogEl = root.querySelector(
+      '.pf-timeline-annotations-clear-dialog',
+    );
+    expect(dialogEl).not.toBeNull();
+    expect(dialogEl?.textContent).toContain('Clear all annotations?');
+    expect(dialogEl?.textContent).toContain('Remove all 1 annotation');
+
+    // Click Confirm clear button
+    const confirmBtn = Array.from(
+      root.querySelectorAll('.pf-timeline-annotations-clear-dialog .pf-button'),
+    ).find((btn) => btn.textContent?.includes('Confirm clear')) as
+      HTMLButtonElement | undefined;
+    expect(confirmBtn).toBeDefined();
+    confirmBtn?.click();
+
+    // Store is now empty
+    expect(store.list().length).toBe(0);
+
+    // Re-render, modal is gone
+    m.render(root, tab.render());
+    expect(
+      root.querySelector('.pf-timeline-annotations-clear-overlay'),
+    ).toBeNull();
+  });
+
+  test('changing annotation kind via store.changeKind', () => {
+    const store = new AnnotationStore();
+    store.add({
+      id: 'item_1',
+      kind: 'rect',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const converted = store.changeKind('item_1', 'ellipse');
+    expect(converted?.kind).toBe('ellipse');
+    expect(store.get('item_1')?.kind).toBe('ellipse');
+
+    const toLabel = store.changeKind('item_1', 'label');
+    expect(toLabel?.kind).toBe('label');
+    expect(store.get('item_1')?.kind).toBe('label');
+  });
+
+  test('jumpTo passes both time focus and track to trace.scrollTo', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    let scrolledArgs: unknown = undefined;
+    let selectedAreaArgs: unknown = undefined;
+
+    const mockTrace = {
+      currentWorkspace: {
+        getTrackByUri: (uri: string) => {
+          if (uri === 'track_1') {
+            return {uri: 'track_1', name: 'Track 1'};
+          }
+          return undefined;
+        },
+      },
+      selection: {
+        selectArea: (args: unknown) => {
+          selectedAreaArgs = args;
+        },
+      },
+      scrollTo: (args: unknown) => {
+        scrolledArgs = args;
+      },
+    } as unknown as Trace;
+
+    const tab = new AnnotationsTab(mockTrace, store, tools, overlay);
+
+    store.add({
+      id: 'rect_jump',
+      kind: 'rect',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const root = document.createElement('div');
+    m.render(root, tab.render());
+
+    const jumpButton = root.querySelector(
+      '.pf-timeline-annotations-actions .pf-button',
+    ) as HTMLButtonElement | null;
+    expect(jumpButton).not.toBeNull();
+    jumpButton?.click();
+
+    expect(selectedAreaArgs).toEqual({
+      start: Time.fromRaw(100n),
+      end: Time.fromRaw(200n),
+      trackUris: ['track_1'],
+    });
+
+    expect(scrolledArgs).toEqual({
+      time: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        behavior: 'focus',
+      },
+      track: {
+        uri: 'track_1',
+        expandGroup: true,
+      },
+    });
   });
 });

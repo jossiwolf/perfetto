@@ -24,11 +24,17 @@ import {
 } from '../../widgets/button';
 import {EmptyState} from '../../widgets/empty_state';
 import {Icon} from '../../widgets/icon';
+import {Popup, PopupPosition} from '../../widgets/popup';
 import {Switch} from '../../widgets/switch';
 import {TextInput} from '../../widgets/text_input';
 import {Chip} from '../../widgets/chip';
 import {Intent} from '../../widgets/common';
-import {type Annotation, type AnnotationStore, normalizeColor} from './model';
+import {
+  type Annotation,
+  type AnnotationStore,
+  type LabelFontFamily,
+  normalizeColor,
+} from './model';
 import {exportAnnotations, importAnnotationsFromFile} from './persistence';
 import {type ToolKind, TOOL_KINDS, type ToolController} from './tools';
 import type {AnnotationsOverlay} from './overlay';
@@ -48,6 +54,18 @@ export const PALETTE_COLORS: ReadonlyArray<{
   {label: 'Blue', value: '#1e88e5'},
   {label: 'Purple', value: '#8e24aa'},
   {label: 'Grey', value: '#757575'},
+];
+
+const ANNOTATION_KINDS: ReadonlyArray<{
+  readonly kind: Annotation['kind'];
+  readonly icon: string;
+  readonly label: string;
+}> = [
+  {kind: 'rect', icon: 'crop_square', label: 'Rectangle'},
+  {kind: 'ellipse', icon: 'circle', label: 'Ellipse'},
+  {kind: 'label', icon: 'text_fields', label: 'Label'},
+  {kind: 'arrow', icon: 'arrow_forward', label: 'Arrow'},
+  {kind: 'path', icon: 'draw', label: 'Path'},
 ];
 
 export function getToolIcon(tool: ToolKind): string {
@@ -280,6 +298,9 @@ export class AnnotationsTab implements Tab {
   private readonly tools: ToolController;
   private readonly overlay: AnnotationsOverlay;
   private pendingClearConfirm = false;
+  private fallbackFillColor: string | undefined = undefined;
+  private fallbackFillOpacity: number = 0.2;
+  private readonly knownAnnotationIds = new Set<string>();
 
   constructor(
     trace: Trace,
@@ -297,6 +318,42 @@ export class AnnotationsTab implements Tab {
     return 'Annotations';
   }
 
+  private get defaultFillColor(): string | undefined {
+    const toolsFill = (this.tools as {fillColor?: string}).fillColor;
+    return toolsFill !== undefined ? toolsFill : this.fallbackFillColor;
+  }
+
+  private setDefaultFillColor(color: string | undefined): void {
+    if (
+      typeof (this.tools as {setFillColor?: (c?: string) => void})
+        .setFillColor === 'function'
+    ) {
+      (this.tools as {setFillColor?: (c?: string) => void}).setFillColor!(
+        color,
+      );
+    } else {
+      this.fallbackFillColor = color;
+    }
+  }
+
+  private get defaultFillOpacity(): number {
+    const toolsOpacity = (this.tools as {fillOpacity?: number}).fillOpacity;
+    return toolsOpacity !== undefined ? toolsOpacity : this.fallbackFillOpacity;
+  }
+
+  private setDefaultFillOpacity(opacity: number): void {
+    if (
+      typeof (this.tools as {setFillOpacity?: (o: number) => void})
+        .setFillOpacity === 'function'
+    ) {
+      (this.tools as {setFillOpacity?: (o: number) => void}).setFillOpacity!(
+        opacity,
+      );
+    } else {
+      this.fallbackFillOpacity = opacity;
+    }
+  }
+
   render(): m.Children {
     const annotations = this.store
       .list()
@@ -309,9 +366,13 @@ export class AnnotationsTab implements Tab {
         return 0;
       });
 
+    for (const ann of annotations) {
+      this.knownAnnotationIds.add(ann.id);
+    }
+
     const children: m.Children = [this.renderToolbar(annotations.length)];
     if (this.pendingClearConfirm) {
-      children.push(this.renderClearConfirmBanner());
+      children.push(this.renderClearConfirmModal(annotations.length));
     }
     if (annotations.length === 0) {
       children.push(
@@ -348,14 +409,18 @@ export class AnnotationsTab implements Tab {
           label: 'Drawing mode',
           title: 'Toggle drawing mode (Mod+Shift+D)',
           checked: this.tools.drawingMode,
-          onchange: () => {
-            this.tools.toggleDrawingMode();
+          onchange: (e: Event) => {
+            const target = e.target as HTMLInputElement | null;
+            const next =
+              target && typeof target.checked === 'boolean'
+                ? target.checked
+                : !this.tools.drawingMode;
+            this.tools.setDrawingMode(next);
           },
         }),
       ),
       m(
         '.pf-timeline-annotations__group',
-        m('span.pf-timeline-annotations__label', 'Tool:'),
         m(
           ButtonGroup,
           {className: 'pf-timeline-annotations__tools'},
@@ -373,22 +438,31 @@ export class AnnotationsTab implements Tab {
               'className': 'pf-timeline-annotations__tool-button',
               'data-tool': toolKind,
               'onclick': () => {
-                this.tools.setTool(toolKind);
+                if (
+                  this.tools.tool === toolKind &&
+                  toolKind !== 'select' &&
+                  this.tools.drawingMode
+                ) {
+                  this.tools.setDrawingMode(false);
+                  return;
+                }
+                if (
+                  typeof (this.tools as {activateTool?: (t: ToolKind) => void})
+                    .activateTool === 'function'
+                ) {
+                  (this.tools as {activateTool?: (t: ToolKind) => void})
+                    .activateTool!(toolKind);
+                } else {
+                  this.tools.setTool(toolKind);
+                  if (toolKind !== 'select' && !this.tools.drawingMode) {
+                    this.tools.setDrawingMode(true);
+                  }
+                }
               },
             });
           }),
         ),
-      ),
-      m(
-        '.pf-timeline-annotations__group',
-        m(ColorSwatches, {
-          label: 'New annotation color:',
-          tooltip: 'Color used for annotations you create next',
-          value: this.tools.color,
-          onChange: (color: string) => {
-            this.tools.setColor(color);
-          },
-        }),
+        this.renderDefaultStylePopup(),
       ),
       m(
         '.pf-timeline-annotations__group.pf-timeline-annotations__group--right',
@@ -410,11 +484,12 @@ export class AnnotationsTab implements Tab {
         m(
           ButtonBar,
           m(Button, {
-            icon: 'file_download',
-            label: 'Export',
-            title: 'Export annotations to JSON',
+            icon: 'delete_sweep',
+            label: 'Clear all',
+            title: 'Remove all annotations',
+            disabled: count === 0,
             onclick: () => {
-              exportAnnotations(this.trace, this.store);
+              this.pendingClearConfirm = true;
             },
           }),
           m(Button, {
@@ -426,12 +501,11 @@ export class AnnotationsTab implements Tab {
             },
           }),
           m(Button, {
-            icon: 'delete_sweep',
-            label: 'Clear all',
-            title: 'Remove all annotations',
-            disabled: count === 0,
+            icon: 'file_download',
+            label: 'Export',
+            title: 'Export annotations to JSON',
             onclick: () => {
-              this.pendingClearConfirm = true;
+              exportAnnotations(this.trace, this.store);
             },
           }),
         ),
@@ -443,28 +517,442 @@ export class AnnotationsTab implements Tab {
     );
   }
 
-  private renderClearConfirmBanner(): m.Children {
+  private renderDefaultStylePopup(): m.Children {
+    const currentColor = this.tools.color;
+    const currentFill = this.defaultFillColor;
+    const currentOpacity = this.defaultFillOpacity;
+
     return m(
-      '.pf-timeline-annotations-confirm-banner',
-      m('span', 'Are you sure you want to clear all annotations?'),
-      m(
-        ButtonBar,
-        m(Button, {
-          intent: Intent.Danger,
-          label: 'Confirm clear',
-          onclick: () => {
-            this.store.replaceAll([]);
-            this.pendingClearConfirm = false;
+      Popup,
+      {
+        fitContent: true,
+        position: PopupPosition.Bottom,
+        className: 'pf-timeline-annotations__style-popup',
+        trigger: m(
+          'button.pf-timeline-annotations__color-trigger',
+          {
+            type: 'button',
+            title: 'Default annotation color & fill',
           },
-        }),
-        m(Button, {
-          label: 'Cancel',
-          onclick: () => {
-            this.pendingClearConfirm = false;
+          m('.pf-timeline-annotations__color-preview', {
+            style: {
+              borderColor: currentColor,
+              backgroundColor:
+                currentFill === 'transparent'
+                  ? 'transparent'
+                  : (currentFill ?? currentColor),
+              opacity: currentFill === 'transparent' ? 1 : currentOpacity,
+            },
+          }),
+          m(Icon, {icon: 'arrow_drop_down'}),
+        ),
+      },
+      m(
+        '.pf-timeline-annotations-style-panel',
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Stroke color'),
+          m(ColorSwatches, {
+            value: currentColor,
+            onChange: (color: string) => {
+              this.tools.setColor(color);
+            },
+          }),
+        ),
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
+          m(
+            '.pf-timeline-annotations-fill-chips',
+            m(Button, {
+              compact: true,
+              label: 'Match stroke',
+              active: currentFill === undefined,
+              onclick: () => this.setDefaultFillColor(undefined),
+            }),
+            m(Button, {
+              compact: true,
+              label: 'None',
+              active: currentFill === 'transparent',
+              onclick: () => this.setDefaultFillColor('transparent'),
+            }),
+          ),
+          m(ColorSwatches, {
+            value: currentFill ?? currentColor,
+            onChange: (color: string) => {
+              this.setDefaultFillColor(color);
+            },
+          }),
+          m(
+            '.pf-timeline-annotations-slider-row',
+            m('span', 'Opacity:'),
+            m('input[type=range]', {
+              min: 0.05,
+              max: 0.8,
+              step: 0.05,
+              value: currentOpacity,
+              oninput: (e: Event) => {
+                const val = parseFloat((e.target as HTMLInputElement).value);
+                this.setDefaultFillOpacity(val);
+              },
+            }),
+            m(
+              'span.pf-timeline-annotations-slider-val',
+              `${Math.round(currentOpacity * 100)}%`,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  private renderAnnotationStylePopup(annotation: Annotation): m.Children {
+    const currentColor = annotation.color;
+    const currentFill = annotation.fillColor;
+    const currentOpacity = annotation.fillOpacity ?? 0.2;
+
+    const sections: m.Children = [
+      m(
+        '.pf-timeline-annotations-style-section',
+        m('span.pf-timeline-annotations__label', 'Stroke color'),
+        m(ColorSwatches, {
+          value: currentColor,
+          onChange: (color: string) => {
+            this.store.update(annotation.id, {color});
           },
         }),
       ),
+      m(
+        '.pf-timeline-annotations-style-section',
+        m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
+        m(
+          '.pf-timeline-annotations-fill-chips',
+          m(Button, {
+            compact: true,
+            label: 'Match stroke',
+            active: currentFill === undefined,
+            onclick: () => {
+              this.store.update(annotation.id, {fillColor: undefined});
+            },
+          }),
+          m(Button, {
+            compact: true,
+            label: 'None',
+            active: currentFill === 'transparent',
+            onclick: () => {
+              this.store.update(annotation.id, {fillColor: 'transparent'});
+            },
+          }),
+        ),
+        m(ColorSwatches, {
+          value: currentFill ?? currentColor,
+          onChange: (color: string) => {
+            this.store.update(annotation.id, {fillColor: color});
+          },
+        }),
+        m(
+          '.pf-timeline-annotations-slider-row',
+          m('span', 'Opacity:'),
+          m('input[type=range]', {
+            min: 0.05,
+            max: 0.8,
+            step: 0.05,
+            value: currentOpacity,
+            oninput: (e: Event) => {
+              const val = parseFloat((e.target as HTMLInputElement).value);
+              this.store.update(annotation.id, {fillOpacity: val});
+            },
+          }),
+          m(
+            'span.pf-timeline-annotations-slider-val',
+            `${Math.round(currentOpacity * 100)}%`,
+          ),
+        ),
+      ),
+    ];
+
+    if (annotation.kind === 'label') {
+      const currentFamily = annotation.fontFamily ?? 'sans-serif';
+      const currentSize = annotation.fontSize ?? 12;
+      const currentTextColor = annotation.textColor ?? annotation.color;
+      const currentBg = annotation.backgroundColor;
+
+      sections.push(
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Font family'),
+          m(
+            ButtonGroup,
+            (['sans-serif', 'monospace', 'serif'] as const).map(
+              (family: LabelFontFamily) => {
+                const label =
+                  family === 'sans-serif'
+                    ? 'Sans'
+                    : family === 'monospace'
+                      ? 'Mono'
+                      : 'Serif';
+                return m(Button, {
+                  compact: true,
+                  label,
+                  active: currentFamily === family,
+                  onclick: () => {
+                    this.store.update(annotation.id, {fontFamily: family});
+                  },
+                });
+              },
+            ),
+          ),
+        ),
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Font size'),
+          m(
+            ButtonGroup,
+            [11, 12, 14, 16, 20, 24].map((size) =>
+              m(Button, {
+                compact: true,
+                label: `${size}`,
+                active: currentSize === size,
+                onclick: () => {
+                  this.store.update(annotation.id, {fontSize: size});
+                },
+              }),
+            ),
+          ),
+        ),
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Text color'),
+          m(Button, {
+            compact: true,
+            label: 'Auto',
+            active: annotation.textColor === undefined,
+            onclick: () => {
+              this.store.update(annotation.id, {textColor: undefined});
+            },
+          }),
+          m(ColorSwatches, {
+            value: currentTextColor,
+            onChange: (textColor: string) => {
+              this.store.update(annotation.id, {textColor});
+            },
+          }),
+        ),
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Background'),
+          m(
+            '.pf-timeline-annotations-fill-chips',
+            m(Button, {
+              compact: true,
+              label: 'Tint',
+              active: currentBg === undefined,
+              onclick: () => {
+                this.store.update(annotation.id, {backgroundColor: undefined});
+              },
+            }),
+            m(Button, {
+              compact: true,
+              label: 'Transparent',
+              active: currentBg === 'transparent',
+              onclick: () => {
+                this.store.update(annotation.id, {
+                  backgroundColor: 'transparent',
+                });
+              },
+            }),
+          ),
+          m(ColorSwatches, {
+            value:
+              currentBg && currentBg !== 'transparent'
+                ? currentBg
+                : (annotation.fillColor ?? annotation.color),
+            onChange: (backgroundColor: string) => {
+              this.store.update(annotation.id, {backgroundColor});
+            },
+          }),
+        ),
+      );
+    }
+
+    if (annotation.kind === 'arrow') {
+      const curVal =
+        annotation.controlOffset?.normalPx ?? annotation.curvature ?? 0;
+      sections.push(
+        m(
+          '.pf-timeline-annotations-style-section',
+          m('span.pf-timeline-annotations__label', 'Arrow curve'),
+          m(
+            ButtonGroup,
+            m(Button, {
+              compact: true,
+              label: 'Straight',
+              active: curVal === 0,
+              onclick: () => {
+                this.store.update(annotation.id, {
+                  curvature: 0,
+                  controlOffset: undefined,
+                });
+              },
+            }),
+            m(Button, {
+              compact: true,
+              label: 'Arc Up',
+              active: curVal === -50,
+              onclick: () => {
+                this.store.update(annotation.id, {
+                  curvature: -50,
+                  controlOffset: {alongFrac: 0.5, normalPx: -50},
+                });
+              },
+            }),
+            m(Button, {
+              compact: true,
+              label: 'Arc Down',
+              active: curVal === 50,
+              onclick: () => {
+                this.store.update(annotation.id, {
+                  curvature: 50,
+                  controlOffset: {alongFrac: 0.5, normalPx: 50},
+                });
+              },
+            }),
+          ),
+          m(
+            '.pf-timeline-annotations-slider-row',
+            m('span', 'Curve:'),
+            m('input[type=range]', {
+              min: -160,
+              max: 160,
+              step: 5,
+              value: curVal,
+              oninput: (e: Event) => {
+                const val = parseInt((e.target as HTMLInputElement).value, 10);
+                this.store.update(annotation.id, {
+                  curvature: val,
+                  controlOffset:
+                    val === 0
+                      ? undefined
+                      : {
+                          alongFrac: annotation.controlOffset?.alongFrac ?? 0.5,
+                          normalPx: val,
+                        },
+                });
+              },
+            }),
+            m('span.pf-timeline-annotations-slider-val', `${curVal}px`),
+          ),
+        ),
+      );
+    }
+
+    return m(
+      Popup,
+      {
+        fitContent: true,
+        position: PopupPosition.Bottom,
+        className: 'pf-timeline-annotations__style-popup',
+        trigger: m(
+          'button.pf-timeline-annotations__color-trigger',
+          {
+            type: 'button',
+            title: 'Style & color options',
+          },
+          m('.pf-timeline-annotations__color-preview', {
+            style: {
+              borderColor: currentColor,
+              backgroundColor:
+                currentFill === 'transparent'
+                  ? 'transparent'
+                  : (currentFill ?? currentColor),
+              opacity: currentFill === 'transparent' ? 1 : currentOpacity,
+            },
+          }),
+          m(Icon, {icon: 'arrow_drop_down'}),
+        ),
+      },
+      m('.pf-timeline-annotations-style-panel', sections),
     );
+  }
+
+  private renderClearConfirmModal(count: number): m.Children {
+    return m(
+      '.pf-timeline-annotations-clear-overlay',
+      {
+        onclick: () => {
+          this.pendingClearConfirm = false;
+        },
+      },
+      m(
+        '.pf-timeline-annotations-clear-dialog',
+        {
+          onclick: (e: MouseEvent) => {
+            e.stopPropagation();
+          },
+        },
+        m(
+          '.pf-timeline-annotations-clear-dialog__badge',
+          m(Icon, {icon: 'delete_sweep'}),
+        ),
+        m(
+          'h3.pf-timeline-annotations-clear-dialog__heading',
+          'Clear all annotations?',
+        ),
+        m(
+          'p.pf-timeline-annotations-clear-dialog__description',
+          `Remove all ${count} annotation${count === 1 ? '' : 's'} from this trace? You can restore them with Undo.`,
+        ),
+        m(
+          ButtonBar,
+          {className: 'pf-timeline-annotations-clear-dialog__actions'},
+          m(Button, {
+            label: 'Cancel',
+            onclick: () => {
+              this.pendingClearConfirm = false;
+            },
+          }),
+          m(Button, {
+            intent: Intent.Danger,
+            variant: ButtonVariant.Filled,
+            label: 'Confirm clear',
+            onclick: () => {
+              this.store.replaceAll([]);
+              this.pendingClearConfirm = false;
+            },
+          }),
+        ),
+      ),
+    );
+  }
+
+  private maybeAutoFocusLabel(
+    dom: HTMLElement,
+    annotation: Annotation,
+    isSelected: boolean,
+  ): void {
+    if (annotation.kind !== 'label' || !isSelected) {
+      return;
+    }
+    const toolsWithAutoFocus = this.tools as {
+      consumeAutoFocusId?: (id: string) => boolean;
+    };
+    const shouldFocus =
+      typeof toolsWithAutoFocus.consumeAutoFocusId === 'function'
+        ? toolsWithAutoFocus.consumeAutoFocusId(annotation.id)
+        : !this.knownAnnotationIds.has(annotation.id) &&
+          this.tools.tool === 'label';
+
+    if (shouldFocus) {
+      requestAnimationFrame(() => {
+        const input = dom.querySelector(
+          '.pf-timeline-annotations-title-input input, input.pf-timeline-annotations-title-input',
+        ) as HTMLInputElement | null;
+        if (input) {
+          input.focus();
+          input.select();
+        }
+      });
+    }
   }
 
   private renderAnnotationItem(annotation: Annotation): m.Children {
@@ -487,16 +975,61 @@ export class AnnotationsTab implements Tab {
         onclick: () => {
           this.store.select(annotation.id);
         },
+        oncreate: (vnode: m.VnodeDOM) => {
+          this.maybeAutoFocusLabel(
+            vnode.dom as HTMLElement,
+            annotation,
+            isSelected,
+          );
+        },
+        onupdate: (vnode: m.VnodeDOM) => {
+          this.maybeAutoFocusLabel(
+            vnode.dom as HTMLElement,
+            annotation,
+            isSelected,
+          );
+        },
       },
       m(
-        '.pf-timeline-annotations-icon',
-        {title: `${kindLabel} annotation`},
-        m(Icon, {icon: getKindIcon(annotation.kind)}),
+        Popup,
+        {
+          fitContent: true,
+          position: PopupPosition.BottomStart,
+          className: 'pf-timeline-annotations__kind-popup',
+          trigger: m(
+            'button.pf-timeline-annotations-icon.pf-timeline-annotations-kind-trigger',
+            {
+              type: 'button',
+              title: `${kindLabel} annotation (click to change type)`,
+            },
+            m(Icon, {icon: getKindIcon(annotation.kind)}),
+          ),
+        },
+        m(
+          '.pf-timeline-annotations-kind-menu',
+          ANNOTATION_KINDS.map(({kind, icon, label}) =>
+            m(
+              `button.pf-timeline-annotations-kind-option.${Popup.DISMISS_POPUP_GROUP_CLASS}`,
+              {
+                key: kind,
+                type: 'button',
+                className: annotation.kind === kind ? 'pf-active' : '',
+                onclick: () => {
+                  this.store.changeKind(annotation.id, kind);
+                },
+              },
+              m(Icon, {icon}),
+              m('span', label),
+            ),
+          ),
+        ),
       ),
       m(TextInput, {
         className: 'pf-timeline-annotations-title-input',
         placeholder: annotation.kind,
-        value: annotation.title ?? '',
+        value:
+          annotation.title ??
+          (annotation.kind === 'label' ? annotation.text : ''),
         onInput: (value: string) => {
           if (annotation.kind === 'label') {
             this.store.update(annotation.id, {title: value, text: value});
@@ -513,12 +1046,7 @@ export class AnnotationsTab implements Tab {
           this.store.update(annotation.id, {description: value});
         },
       }),
-      m(ColorSwatches, {
-        value: annotation.color,
-        onChange: (color: string) => {
-          this.store.update(annotation.id, {color});
-        },
-      }),
+      this.renderAnnotationStylePopup(annotation),
       this.renderBadge(renderInfo),
       m(
         '.pf-timeline-annotations-actions',
@@ -590,13 +1118,45 @@ export class AnnotationsTab implements Tab {
   private jumpTo(annotation: Annotation): void {
     const target = getJumpTarget(annotation, this.store);
     const existingTrackUris = target.trackUris.filter(
-      (uri) => this.trace.currentWorkspace.getTrackByUri(uri) !== undefined,
+      (uri) => this.trace.currentWorkspace?.getTrackByUri?.(uri) !== undefined,
     );
-    this.trace.selection.selectArea({
+    this.trace.selection?.selectArea?.({
       start: target.start,
       end: target.end,
       trackUris: existingTrackUris,
     });
+
+    let primaryTrackUri = target.trackUris.find(
+      (uri) => this.trace.currentWorkspace?.getTrackByUri?.(uri) !== undefined,
+    );
+
+    if (
+      primaryTrackUri === undefined &&
+      this.trace.currentWorkspace?.flatTracks !== undefined
+    ) {
+      const trackNames: ReadonlyArray<string> =
+        annotation.kind === 'rect' || annotation.kind === 'ellipse'
+          ? (annotation.anchor.trackNames ?? [])
+          : annotation.kind === 'label'
+            ? annotation.position.trackName
+              ? [annotation.position.trackName]
+              : []
+            : [];
+      for (const name of trackNames) {
+        const matched = this.trace.currentWorkspace.flatTracks.find(
+          (track: {readonly name?: string; readonly uri?: string}) =>
+            track.name === name,
+        );
+        if (matched?.uri) {
+          primaryTrackUri = matched.uri;
+          break;
+        }
+      }
+    }
+
+    if (primaryTrackUri === undefined && target.trackUris.length > 0) {
+      primaryTrackUri = target.trackUris[0];
+    }
 
     if (typeof this.trace.scrollTo === 'function') {
       this.trace.scrollTo({
@@ -605,6 +1165,9 @@ export class AnnotationsTab implements Tab {
           end: target.end,
           behavior: 'focus',
         },
+        ...(primaryTrackUri !== undefined
+          ? {track: {uri: primaryTrackUri, expandGroup: true}}
+          : {}),
       });
     }
   }

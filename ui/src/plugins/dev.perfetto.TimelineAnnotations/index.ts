@@ -48,8 +48,20 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
 
     const tools = new ToolController(store, {
       requestRedraw: () => trace.raf.scheduleFullRedraw(),
-      onAnnotationCreated: () => {
+      onAnnotationCreated: (_id: string) => {
         trace.tabs.showTab(ANNOTATIONS_TAB_URI);
+        trace.raf.scheduleFullRedraw();
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const el = document.querySelector(
+              `.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input`,
+            ) as HTMLInputElement | null;
+            if (el && tools.tool === 'label') {
+              el.focus();
+              el.select();
+            }
+          });
+        });
       },
     });
 
@@ -94,6 +106,65 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
     trace.tabs.registerTab({
       uri: ANNOTATIONS_TAB_URI,
       content: tab,
+    });
+
+    const isEditable = (el: Element | null): boolean => {
+      if (!el) return false;
+      if (
+        el instanceof HTMLInputElement ||
+        el instanceof HTMLTextAreaElement ||
+        el instanceof HTMLSelectElement
+      ) {
+        return true;
+      }
+      if (el instanceof HTMLElement && el.isContentEditable) {
+        return true;
+      }
+      return false;
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) {
+        return;
+      }
+      const target = e.target as Element | null;
+      if (isEditable(target) || isEditable(document.activeElement)) {
+        return;
+      }
+      if (
+        (e.key === 'Backspace' || e.key === 'Delete') &&
+        store.selectedId !== undefined
+      ) {
+        e.preventDefault();
+        store.remove(store.selectedId);
+        trace.raf.scheduleFullRedraw();
+        return;
+      }
+      if (
+        store.selectedId !== undefined &&
+        tools.tool === 'label' &&
+        e.key.length === 1 &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        const selected = store.get(store.selectedId);
+        if (selected?.kind === 'label') {
+          const el = document.querySelector(
+            '.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input',
+          ) as HTMLInputElement | null;
+          if (el) {
+            el.focus();
+          }
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    trace.trash.use({
+      [Symbol.dispose]: () => {
+        document.removeEventListener('keydown', handleKeyDown);
+      },
     });
 
     trace.statusbar.registerItem({

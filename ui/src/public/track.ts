@@ -14,7 +14,8 @@
 
 import type m from 'mithril';
 import type {duration, time} from '../base/time';
-import type {Size2D, VerticalBounds} from '../base/geom';
+import type {Point2D, Rect2D, Size2D, VerticalBounds} from '../base/geom';
+import type {CSSCursor} from '../base/dom_utils';
 import type {TimeScale} from '../base/time_scale';
 import type {HighPrecisionTimeSpan} from '../base/high_precision_time_span';
 import type {TrackEventDetailsPanel} from './details_panel';
@@ -349,6 +350,22 @@ export interface TrackBounds {
 }
 
 /**
+ * Fine-grained hit zone returned by an Overlay for timeline interactions.
+ */
+export interface OverlayInteractionZone {
+  readonly id: string;
+  readonly area: Point2D & Size2D;
+  readonly cursor?: CSSCursor;
+}
+
+export interface OverlayInteractionContext {
+  readonly timelineRect: Rect2D;
+  readonly timescale: TimeScale;
+  readonly tracks: ReadonlyArray<TrackBounds>;
+  readonly rootNode: TrackNode;
+}
+
+/**
  * Contextual information passed to pointer events routed to interactive overlays.
  */
 export interface OverlayPointerEvent {
@@ -388,6 +405,18 @@ export interface Overlay {
    * `isInteractive()` returns true.
    */
   isInteractive?(): boolean;
+
+  /**
+   * Optional: Return fine-grained hit zones (e.g. rendered annotation bounds
+   * or manipulation handles) in container pixel coordinates for the given
+   * track tree. When `isInteractive()` is false (or when an overlay only
+   * wants to capture gestures on specific shapes rather than the entire
+   * timeline), these zones participate in the timeline's ZonedInteractionHandler
+   * so empty timeline space continues to pan and select slices normally.
+   */
+  getInteractionZones?(
+    ctx: OverlayInteractionContext,
+  ): ReadonlyArray<OverlayInteractionZone>;
 
   /**
    * Called when a pointer down / drag start occurs while interactive.

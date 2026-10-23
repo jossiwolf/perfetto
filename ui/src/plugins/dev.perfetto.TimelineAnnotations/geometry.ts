@@ -373,3 +373,109 @@ export function hitTestPolyline(
   }
   return false;
 }
+
+export function computeQuadraticControlPoint(
+  start: Point2D,
+  end: Point2D,
+  curvature: number,
+  alongFrac = 0.5,
+): Point2D {
+  const bx = start.x + (end.x - start.x) * alongFrac;
+  const by = start.y + (end.y - start.y) * alongFrac;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  let nx = 0;
+  let ny = -1;
+  if (len > 1e-6) {
+    nx = -dy / len;
+    ny = dx / len;
+  }
+  return {
+    x: bx + nx * curvature * 2,
+    y: by + ny * curvature * 2,
+  };
+}
+
+export function evaluateQuadraticBezier(
+  start: Point2D,
+  control: Point2D,
+  end: Point2D,
+  t: number,
+): Point2D {
+  const u = 1 - t;
+  const tt = t * t;
+  const uu = u * u;
+  const u2t = 2 * u * t;
+  return {
+    x: uu * start.x + u2t * control.x + tt * end.x,
+    y: uu * start.y + u2t * control.y + tt * end.y,
+  };
+}
+
+export function quadraticBezierEndAngle(
+  start: Point2D,
+  control: Point2D,
+  end: Point2D,
+): number {
+  let dx = end.x - control.x;
+  let dy = end.y - control.y;
+  if (Math.hypot(dx, dy) < 1e-4) {
+    dx = end.x - start.x;
+    dy = end.y - start.y;
+  }
+  return Math.atan2(dy, dx);
+}
+
+export function sampleQuadraticBezier(
+  start: Point2D,
+  control: Point2D,
+  end: Point2D,
+  numSegments = 16,
+): Point2D[] {
+  const count = Math.max(1, numSegments);
+  const points: Point2D[] = [];
+  for (let i = 0; i <= count; i += 1) {
+    const t = i / count;
+    points.push(evaluateQuadraticBezier(start, control, end, t));
+  }
+  return points;
+}
+
+export function curvatureFromMidpoint(
+  start: Point2D,
+  end: Point2D,
+  targetMidpoint: Point2D,
+): {curvature: number; alongFrac: number} {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    return {
+      curvature: -(targetMidpoint.y - start.y),
+      alongFrac: 0.5,
+    };
+  }
+  const ux = dx / len;
+  const uy = dy / len;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const wx = targetMidpoint.x - start.x;
+  const wy = targetMidpoint.y - start.y;
+  const projAlong = wx * ux + wy * uy;
+  const rawAlongFrac = projAlong / len;
+  const alongFrac = Math.max(0.15, Math.min(0.85, rawAlongFrac));
+  const curvature = wx * nx + wy * ny;
+  return {curvature, alongFrac};
+}
+
+export function hitTestQuadraticBezier(
+  pt: Point2D,
+  start: Point2D,
+  control: Point2D,
+  end: Point2D,
+  tolPx: number,
+): boolean {
+  const sampled = sampleQuadraticBezier(start, control, end, 32);
+  return hitTestPolyline(pt, sampled, tolPx);
+}

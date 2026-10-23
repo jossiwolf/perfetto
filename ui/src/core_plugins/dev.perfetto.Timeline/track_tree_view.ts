@@ -66,7 +66,7 @@ import {
   wheelNavigationInteraction,
 } from './timeline_interactions';
 import {TrackView} from './track_view';
-import {createOverlayInteractionZone} from './overlay_interactions';
+import {createOverlayInteractionZones} from './overlay_interactions';
 import {drawVerticalLineAtTime} from '../../base/vertical_line_helper';
 import {featureFlags} from '../../core/feature_flags';
 import {EmptyState} from '../../widgets/empty_state';
@@ -485,6 +485,11 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
     this.drawHoveredCursorVertical(ctx, timescale, size);
     this.drawNoteVerticals(ctx, timescale, size);
     this.drawAreaSelection(ctx, timescale, size);
+
+    this.trace.tracks.overlays.forEach((overlay) => {
+      overlay.render(ctx, timescale, size, renderedTracks, colors, rootNode);
+    });
+
     this.updateInteractions(
       timelineRect,
       timescale,
@@ -492,10 +497,6 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
       renderedTracks,
       rootNode,
     );
-
-    this.trace.tracks.overlays.forEach((overlay) => {
-      overlay.render(ctx, timescale, size, renderedTracks, colors, rootNode);
-    });
 
     const renderTime = performance.now() - start;
     this.updatePerfStats(renderTime, renderedTracks.length, tracksOnCanvas);
@@ -611,7 +612,7 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
     const areaSelection =
       trace.selection.selection.kind === 'area' && trace.selection.selection;
 
-    const overlayZone = createOverlayInteractionZone({
+    const overlayZones = createOverlayInteractionZones({
       overlays: trace.tracks.overlays,
       timelineRect,
       timescale,
@@ -621,7 +622,7 @@ export class TrackTreeView implements m.ClassComponent<TrackTreeViewAttrs> {
     });
 
     ensureExists(this.interactions).update([
-      overlayZone,
+      ...overlayZones,
       shiftDragPanInteraction(trace, timelineRect, timescale),
       areaSelection !== false && {
         id: 'start-edit',

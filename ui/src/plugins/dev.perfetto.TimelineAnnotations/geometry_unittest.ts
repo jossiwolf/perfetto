@@ -29,6 +29,7 @@ import {
   recognizeShape,
   sampleQuadraticBezier,
   simplifyPath,
+  smoothPath,
 } from './geometry';
 
 describe('geometry.ts', () => {
@@ -402,6 +403,53 @@ describe('geometry.ts', () => {
       expect(
         hitTestQuadraticBezier({x: 50, y: 100}, start, control, end, 5),
       ).toBe(false);
+    });
+  });
+
+  describe('smoothPath', () => {
+    test('points <= 2 or iterations <= 0 returned as copies', () => {
+      const single = [{x: 1, y: 1}];
+      expect(smoothPath(single, 2)).toEqual([{x: 1, y: 1}]);
+      const two = [
+        {x: 0, y: 0},
+        {x: 10, y: 10},
+      ];
+      expect(smoothPath(two, 2)).toEqual(two);
+      const three = [
+        {x: 0, y: 0},
+        {x: 5, y: 10},
+        {x: 10, y: 0},
+      ];
+      expect(smoothPath(three, 0)).toEqual(three);
+    });
+
+    test('preserves exact first and last points across iterations', () => {
+      const pts: Point2D[] = [
+        {x: 10, y: 20},
+        {x: 30, y: 80},
+        {x: 50, y: 10},
+        {x: 70, y: 90},
+        {x: 100, y: 50},
+      ];
+      const smoothed = smoothPath(pts, 2);
+      expect(smoothed[0]).toEqual(pts[0]);
+      expect(smoothed[smoothed.length - 1]).toEqual(pts[pts.length - 1]);
+    });
+
+    test('smooths jagged path generating more points and reducing peak deviation', () => {
+      const zigzag: Point2D[] = [
+        {x: 0, y: 0},
+        {x: 10, y: 50},
+        {x: 20, y: 0},
+        {x: 30, y: 50},
+        {x: 40, y: 0},
+      ];
+      const iter1 = smoothPath(zigzag, 1);
+      expect(iter1.length).toBeGreaterThan(zigzag.length);
+      const iter2 = smoothPath(zigzag, 2);
+      expect(iter2.length).toBeGreaterThan(iter1.length);
+      expect(iter2[0]).toEqual({x: 0, y: 0});
+      expect(iter2[iter2.length - 1]).toEqual({x: 40, y: 0});
     });
   });
 });

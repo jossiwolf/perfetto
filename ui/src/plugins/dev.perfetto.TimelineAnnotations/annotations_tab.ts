@@ -117,51 +117,135 @@ function getKindIcon(kind: Annotation['kind']): string {
   }
 }
 
+export function colorWithAlpha(color: string, alpha: number): string {
+  const normalized = normalizeColor(color);
+  if (/^#[0-9a-f]{6}$/i.test(normalized)) {
+    const red = parseInt(normalized.slice(1, 3), 16);
+    const green = parseInt(normalized.slice(3, 5), 16);
+    const blue = parseInt(normalized.slice(5, 7), 16);
+    const clampedAlpha = Math.max(
+      0,
+      Math.min(1, Number.isFinite(alpha) ? alpha : 1),
+    );
+    return `rgba(${red}, ${green}, ${blue}, ${clampedAlpha})`;
+  }
+  return color;
+}
+
 export interface ColorSwatchesAttrs {
   readonly value: string;
   readonly onChange: (color: string) => void;
   readonly label?: string;
   readonly tooltip?: string;
+  readonly allowMatchStroke?: {
+    readonly active: boolean;
+    readonly strokeColor: string;
+    readonly title?: string;
+    readonly onSelect: () => void;
+  };
+  readonly allowTransparent?: {
+    readonly active: boolean;
+    readonly title?: string;
+    readonly onSelect: () => void;
+  };
 }
 
 export class ColorSwatches implements m.ClassComponent<ColorSwatchesAttrs> {
   view({attrs}: m.CVnode<ColorSwatchesAttrs>) {
-    const {value, onChange, label, tooltip} = attrs;
+    const {
+      value,
+      onChange,
+      label,
+      tooltip,
+      allowMatchStroke,
+      allowTransparent,
+    } = attrs;
     const normalized = normalizeColor(value).toLowerCase();
+    const isSpecialActive = Boolean(
+      allowMatchStroke?.active || allowTransparent?.active,
+    );
     const isPaletteMatch = PALETTE_COLORS.some(
       (paletteColor) =>
         normalizeColor(paletteColor.value).toLowerCase() === normalized,
     );
 
-    const swatchElements = PALETTE_COLORS.map((paletteColor) => {
+    const swatchElements: m.Children[] = [];
+
+    if (allowMatchStroke !== undefined) {
+      swatchElements.push(
+        m(
+          'button.pf-timeline-annotations__swatch.pf-timeline-annotations__swatch--auto',
+          {
+            key: 'match-stroke',
+            type: 'button',
+            className: allowMatchStroke.active
+              ? 'pf-timeline-annotations__swatch--active'
+              : '',
+            style: {borderColor: allowMatchStroke.strokeColor},
+            title: allowMatchStroke.title ?? 'Match stroke color',
+            onclick: (event: MouseEvent) => {
+              event.stopPropagation();
+              allowMatchStroke.onSelect();
+            },
+          },
+          m(Icon, {icon: 'hdr_auto'}),
+        ),
+      );
+    }
+
+    if (allowTransparent !== undefined) {
+      swatchElements.push(
+        m(
+          'button.pf-timeline-annotations__swatch.pf-timeline-annotations__swatch--none',
+          {
+            key: 'transparent',
+            type: 'button',
+            className: allowTransparent.active
+              ? 'pf-timeline-annotations__swatch--active'
+              : '',
+            title: allowTransparent.title ?? 'No fill (transparent)',
+            onclick: (event: MouseEvent) => {
+              event.stopPropagation();
+              allowTransparent.onSelect();
+            },
+          },
+        ),
+      );
+    }
+
+    for (const paletteColor of PALETTE_COLORS) {
       const isActive =
+        !isSpecialActive &&
         normalizeColor(paletteColor.value).toLowerCase() === normalized;
-      return m('button.pf-timeline-annotations__swatch', {
-        key: paletteColor.value,
-        type: 'button',
-        className: isActive ? 'pf-timeline-annotations__swatch--active' : '',
-        style: {backgroundColor: paletteColor.value},
-        title: paletteColor.label,
-        onclick: (event: MouseEvent) => {
-          event.stopPropagation();
-          onChange(paletteColor.value);
-        },
-      });
-    });
+      swatchElements.push(
+        m('button.pf-timeline-annotations__swatch', {
+          key: paletteColor.value,
+          type: 'button',
+          className: isActive ? 'pf-timeline-annotations__swatch--active' : '',
+          style: {backgroundColor: paletteColor.value},
+          title: paletteColor.label,
+          onclick: (event: MouseEvent) => {
+            event.stopPropagation();
+            onChange(paletteColor.value);
+          },
+        }),
+      );
+    }
 
     const customInputHex = /^#[0-9a-f]{6}$/i.test(normalized)
       ? normalized
       : '#757575';
+    const isCustomActive = !isSpecialActive && !isPaletteMatch;
     swatchElements.push(
       m(
         'label.pf-timeline-annotations__swatch.pf-timeline-annotations__swatch--custom',
         {
           key: 'custom',
-          className: !isPaletteMatch
+          className: isCustomActive
             ? 'pf-timeline-annotations__swatch--active'
             : '',
-          style: !isPaletteMatch ? {backgroundColor: normalized} : undefined,
-          title: !isPaletteMatch
+          style: isCustomActive ? {backgroundColor: normalized} : undefined,
+          title: isCustomActive
             ? `Custom color (${normalized})`
             : 'Custom color...',
           onclick: (event: MouseEvent) => {
@@ -301,6 +385,10 @@ export class AnnotationsTab implements Tab {
   private fallbackFillColor: string | undefined = undefined;
   private fallbackFillOpacity: number = 0.2;
   private readonly knownAnnotationIds = new Set<string>();
+  private readonly deletingIds = new Set<string>();
+  private openPopupKey: string | undefined = undefined;
+  private closingPopupKey: string | undefined = undefined;
+  private closeTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 
   constructor(
     trace: Trace,
@@ -318,6 +406,110 @@ export class AnnotationsTab implements Tab {
     return 'Annotations';
   }
 
+  private closePopupWithAnimation(key: string): void {
+    if (this.openPopupKey === key) {
+      this.openPopupKey = undefined;
+      this.closingPopupKey = key;
+      if (this.closeTimer !== undefined) {
+        clearTimeout(this.closeTimer);
+      }
+      m.redraw();
+      this.closeTimer = setTimeout(() => {
+        if (this.closingPopupKey === key) {
+          this.closingPopupKey = undefined;
+          this.closeTimer = undefined;
+          m.redraw();
+        }
+      }, 130);
+    }
+  }
+
+  private closeAllPopups(): void {
+    if (this.closeTimer !== undefined) {
+      clearTimeout(this.closeTimer);
+      this.closeTimer = undefined;
+    }
+    this.openPopupKey = undefined;
+    this.closingPopupKey = undefined;
+  }
+
+  private deleteAnnotationAnimated(id: string): void {
+    if (this.deletingIds.has(id)) {
+      return;
+    }
+    this.deletingIds.add(id);
+    this.trace.raf?.scheduleFullRedraw?.();
+    m.redraw();
+    setTimeout(() => {
+      this.deletingIds.delete(id);
+      this.store.remove(id);
+      this.trace.raf?.scheduleFullRedraw?.();
+      m.redraw();
+    }, 150);
+  }
+
+  private renderAnimatedPopup(
+    key: string,
+    triggerVnode: m.Vnode,
+    position: PopupPosition,
+    className: string,
+    content: m.Children,
+  ): m.Children {
+    const isOpen = this.openPopupKey === key || this.closingPopupKey === key;
+    const isClosing = this.closingPopupKey === key;
+    const triggerAttrs = triggerVnode.attrs as
+      {onclick?: (event: MouseEvent) => void} | undefined;
+    const originalOnClick = triggerAttrs?.onclick;
+    const triggerWithClick = {
+      ...triggerVnode,
+      attrs: {
+        ...triggerVnode.attrs,
+        onclick: (event: MouseEvent) => {
+          event.stopPropagation();
+          if (typeof originalOnClick === 'function') {
+            originalOnClick(event);
+          }
+          if (this.openPopupKey === key) {
+            this.closePopupWithAnimation(key);
+          } else {
+            if (this.closeTimer !== undefined) {
+              clearTimeout(this.closeTimer);
+              this.closeTimer = undefined;
+            }
+            this.closingPopupKey = undefined;
+            this.openPopupKey = key;
+            m.redraw();
+          }
+        },
+      },
+    };
+
+    return m(
+      Popup,
+      {
+        fitContent: true,
+        position,
+        className,
+        isOpen,
+        onChange: (shouldOpen: boolean) => {
+          if (!shouldOpen) {
+            this.closePopupWithAnimation(key);
+          }
+        },
+        trigger: triggerWithClick,
+      },
+      m(
+        '.pf-timeline-annotations-popup-anim',
+        {
+          className: isClosing
+            ? 'pf-timeline-annotations-popup-anim--closing'
+            : '',
+        },
+        content,
+      ),
+    );
+  }
+
   private get defaultFillColor(): string | undefined {
     const toolsFill = (this.tools as {fillColor?: string}).fillColor;
     return toolsFill !== undefined ? toolsFill : this.fallbackFillColor;
@@ -325,10 +517,10 @@ export class AnnotationsTab implements Tab {
 
   private setDefaultFillColor(color: string | undefined): void {
     if (
-      typeof (this.tools as {setFillColor?: (c?: string) => void})
+      typeof (this.tools as {setFillColor?: (color?: string) => void})
         .setFillColor === 'function'
     ) {
-      (this.tools as {setFillColor?: (c?: string) => void}).setFillColor!(
+      (this.tools as {setFillColor?: (color?: string) => void}).setFillColor!(
         color,
       );
     } else {
@@ -343,12 +535,11 @@ export class AnnotationsTab implements Tab {
 
   private setDefaultFillOpacity(opacity: number): void {
     if (
-      typeof (this.tools as {setFillOpacity?: (o: number) => void})
+      typeof (this.tools as {setFillOpacity?: (opacity: number) => void})
         .setFillOpacity === 'function'
     ) {
-      (this.tools as {setFillOpacity?: (o: number) => void}).setFillOpacity!(
-        opacity,
-      );
+      (this.tools as {setFillOpacity?: (opacity: number) => void})
+        .setFillOpacity!(opacity);
     } else {
       this.fallbackFillOpacity = opacity;
     }
@@ -405,19 +596,31 @@ export class AnnotationsTab implements Tab {
       '.pf-timeline-annotations__toolbar.pf-timeline-annotations-toolbar',
       m(
         '.pf-timeline-annotations__group',
-        m(Switch, {
-          label: 'Drawing mode',
-          title: 'Toggle drawing mode (Mod+Shift+D)',
-          checked: this.tools.drawingMode,
-          onchange: (e: Event) => {
-            const target = e.target as HTMLInputElement | null;
-            const next =
-              target && typeof target.checked === 'boolean'
-                ? target.checked
-                : !this.tools.drawingMode;
-            this.tools.setDrawingMode(next);
+        m(
+          '.pf-timeline-annotations__drawing-toggle',
+          {
+            className: this.tools.drawingMode
+              ? 'pf-timeline-annotations__drawing-toggle--active'
+              : '',
           },
-        }),
+          m(Icon, {
+            icon: 'draw',
+            className: 'pf-timeline-annotations__drawing-icon',
+          }),
+          m(Switch, {
+            label: 'Drawing mode',
+            title: 'Toggle drawing mode (Mod+Shift+D)',
+            checked: this.tools.drawingMode,
+            onchange: (event: Event) => {
+              const target = event.target as HTMLInputElement | null;
+              const next =
+                target && typeof target.checked === 'boolean'
+                  ? target.checked
+                  : !this.tools.drawingMode;
+              this.tools.setDrawingMode(next);
+            },
+          }),
+        ),
       ),
       m(
         '.pf-timeline-annotations__group',
@@ -481,17 +684,19 @@ export class AnnotationsTab implements Tab {
             onclick: () => this.store.redo(),
           }),
         ),
+        m('.pf-timeline-annotations__divider'),
+        m(Button, {
+          icon: 'delete_sweep',
+          label: 'Clear all',
+          title: 'Remove all annotations',
+          disabled: count === 0,
+          onclick: () => {
+            this.pendingClearConfirm = true;
+          },
+        }),
+        m('.pf-timeline-annotations__divider'),
         m(
           ButtonBar,
-          m(Button, {
-            icon: 'delete_sweep',
-            label: 'Clear all',
-            title: 'Remove all annotations',
-            disabled: count === 0,
-            onclick: () => {
-              this.pendingClearConfirm = true;
-            },
-          }),
           m(Button, {
             icon: 'file_upload',
             label: 'Import',
@@ -509,10 +714,6 @@ export class AnnotationsTab implements Tab {
             },
           }),
         ),
-        m(
-          '.pf-timeline-annotations-count',
-          `${count} annotation${count === 1 ? '' : 's'}`,
-        ),
       ),
     );
   }
@@ -521,88 +722,89 @@ export class AnnotationsTab implements Tab {
     const currentColor = this.tools.color;
     const currentFill = this.defaultFillColor;
     const currentOpacity = this.defaultFillOpacity;
+    const fillCss =
+      currentFill === 'transparent'
+        ? 'transparent'
+        : colorWithAlpha(
+            currentFill ?? currentColor,
+            Math.max(0.35, currentOpacity),
+          );
 
-    return m(
-      Popup,
+    const trigger = m(
+      'button.pf-timeline-annotations__color-trigger',
       {
-        fitContent: true,
-        position: PopupPosition.Bottom,
-        className: 'pf-timeline-annotations__style-popup',
-        trigger: m(
-          'button.pf-timeline-annotations__color-trigger',
-          {
-            type: 'button',
-            title: 'Default annotation color & fill',
-          },
-          m('.pf-timeline-annotations__color-preview', {
-            style: {
-              borderColor: currentColor,
-              backgroundColor:
-                currentFill === 'transparent'
-                  ? 'transparent'
-                  : (currentFill ?? currentColor),
-              opacity: currentFill === 'transparent' ? 1 : currentOpacity,
-            },
-          }),
-          m(Icon, {icon: 'arrow_drop_down'}),
-        ),
+        type: 'button',
+        title: 'Default annotation color & fill',
       },
+      m('.pf-timeline-annotations__color-preview', {
+        style: {
+          borderColor: currentColor,
+          backgroundColor: fillCss,
+        },
+      }),
+      m(Icon, {icon: 'arrow_drop_down'}),
+    );
+
+    const content = m(
+      '.pf-timeline-annotations-style-panel',
       m(
-        '.pf-timeline-annotations-style-panel',
+        '.pf-timeline-annotations-style-section',
+        m('span.pf-timeline-annotations__label', 'Stroke color'),
+        m(ColorSwatches, {
+          value: currentColor,
+          onChange: (color: string) => {
+            this.tools.setColor(color);
+          },
+        }),
+      ),
+      m(
+        '.pf-timeline-annotations-style-section',
+        m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
+        m(ColorSwatches, {
+          value: currentFill ?? currentColor,
+          allowMatchStroke: {
+            active: currentFill === undefined,
+            strokeColor: currentColor,
+            title: 'Match stroke color',
+            onSelect: () => this.setDefaultFillColor(undefined),
+          },
+          allowTransparent: {
+            active: currentFill === 'transparent',
+            title: 'No fill (transparent)',
+            onSelect: () => this.setDefaultFillColor('transparent'),
+          },
+          onChange: (color: string) => {
+            this.setDefaultFillColor(color);
+          },
+        }),
         m(
-          '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Stroke color'),
-          m(ColorSwatches, {
-            value: currentColor,
-            onChange: (color: string) => {
-              this.tools.setColor(color);
+          '.pf-timeline-annotations-slider-row',
+          m('span', 'Opacity:'),
+          m('input[type=range]', {
+            min: 0.05,
+            max: 0.8,
+            step: 0.05,
+            value: currentOpacity,
+            oninput: (event: Event) => {
+              const target = event.target as HTMLInputElement;
+              const val = parseFloat(target.value);
+              this.setDefaultFillOpacity(val);
             },
           }),
-        ),
-        m(
-          '.pf-timeline-annotations-style-section',
-          m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
           m(
-            '.pf-timeline-annotations-fill-chips',
-            m(Button, {
-              compact: true,
-              label: 'Match stroke',
-              active: currentFill === undefined,
-              onclick: () => this.setDefaultFillColor(undefined),
-            }),
-            m(Button, {
-              compact: true,
-              label: 'None',
-              active: currentFill === 'transparent',
-              onclick: () => this.setDefaultFillColor('transparent'),
-            }),
-          ),
-          m(ColorSwatches, {
-            value: currentFill ?? currentColor,
-            onChange: (color: string) => {
-              this.setDefaultFillColor(color);
-            },
-          }),
-          m(
-            '.pf-timeline-annotations-slider-row',
-            m('span', 'Opacity:'),
-            m('input[type=range]', {
-              min: 0.05,
-              max: 0.8,
-              step: 0.05,
-              value: currentOpacity,
-              oninput: (e: Event) => {
-                const val = parseFloat((e.target as HTMLInputElement).value);
-                this.setDefaultFillOpacity(val);
-              },
-            }),
-            m(
-              'span.pf-timeline-annotations-slider-val',
-              `${Math.round(currentOpacity * 100)}%`,
-            ),
+            'span.pf-timeline-annotations-slider-val',
+            `${Math.round(currentOpacity * 100)}%`,
           ),
         ),
       ),
+    );
+
+    return this.renderAnimatedPopup(
+      'default-style',
+      trigger,
+      PopupPosition.Bottom,
+      'pf-timeline-annotations__style-popup',
+      content,
     );
   }
 
@@ -610,6 +812,13 @@ export class AnnotationsTab implements Tab {
     const currentColor = annotation.color;
     const currentFill = annotation.fillColor;
     const currentOpacity = annotation.fillOpacity ?? 0.2;
+    const fillCss =
+      currentFill === 'transparent'
+        ? 'transparent'
+        : colorWithAlpha(
+            currentFill ?? currentColor,
+            Math.max(0.35, currentOpacity),
+          );
 
     const sections: m.Children = [
       m(
@@ -625,27 +834,23 @@ export class AnnotationsTab implements Tab {
       m(
         '.pf-timeline-annotations-style-section',
         m('span.pf-timeline-annotations__label', 'Dim / Fill color'),
-        m(
-          '.pf-timeline-annotations-fill-chips',
-          m(Button, {
-            compact: true,
-            label: 'Match stroke',
-            active: currentFill === undefined,
-            onclick: () => {
-              this.store.update(annotation.id, {fillColor: undefined});
-            },
-          }),
-          m(Button, {
-            compact: true,
-            label: 'None',
-            active: currentFill === 'transparent',
-            onclick: () => {
-              this.store.update(annotation.id, {fillColor: 'transparent'});
-            },
-          }),
-        ),
         m(ColorSwatches, {
           value: currentFill ?? currentColor,
+          allowMatchStroke: {
+            active: currentFill === undefined,
+            strokeColor: currentColor,
+            title: 'Match stroke color',
+            onSelect: () => {
+              this.store.update(annotation.id, {fillColor: undefined});
+            },
+          },
+          allowTransparent: {
+            active: currentFill === 'transparent',
+            title: 'No fill (transparent)',
+            onSelect: () => {
+              this.store.update(annotation.id, {fillColor: 'transparent'});
+            },
+          },
           onChange: (color: string) => {
             this.store.update(annotation.id, {fillColor: color});
           },
@@ -658,8 +863,9 @@ export class AnnotationsTab implements Tab {
             max: 0.8,
             step: 0.05,
             value: currentOpacity,
-            oninput: (e: Event) => {
-              const val = parseFloat((e.target as HTMLInputElement).value);
+            oninput: (event: Event) => {
+              const target = event.target as HTMLInputElement;
+              const val = parseFloat(target.value);
               this.store.update(annotation.id, {fillOpacity: val});
             },
           }),
@@ -723,16 +929,16 @@ export class AnnotationsTab implements Tab {
         m(
           '.pf-timeline-annotations-style-section',
           m('span.pf-timeline-annotations__label', 'Text color'),
-          m(Button, {
-            compact: true,
-            label: 'Auto',
-            active: annotation.textColor === undefined,
-            onclick: () => {
-              this.store.update(annotation.id, {textColor: undefined});
-            },
-          }),
           m(ColorSwatches, {
             value: currentTextColor,
+            allowMatchStroke: {
+              active: annotation.textColor === undefined,
+              strokeColor: annotation.color,
+              title: 'Auto theme text color',
+              onSelect: () => {
+                this.store.update(annotation.id, {textColor: undefined});
+              },
+            },
             onChange: (textColor: string) => {
               this.store.update(annotation.id, {textColor});
             },
@@ -741,32 +947,28 @@ export class AnnotationsTab implements Tab {
         m(
           '.pf-timeline-annotations-style-section',
           m('span.pf-timeline-annotations__label', 'Background'),
-          m(
-            '.pf-timeline-annotations-fill-chips',
-            m(Button, {
-              compact: true,
-              label: 'Tint',
-              active: currentBg === undefined,
-              onclick: () => {
-                this.store.update(annotation.id, {backgroundColor: undefined});
-              },
-            }),
-            m(Button, {
-              compact: true,
-              label: 'Transparent',
-              active: currentBg === 'transparent',
-              onclick: () => {
-                this.store.update(annotation.id, {
-                  backgroundColor: 'transparent',
-                });
-              },
-            }),
-          ),
           m(ColorSwatches, {
             value:
               currentBg && currentBg !== 'transparent'
                 ? currentBg
                 : (annotation.fillColor ?? annotation.color),
+            allowMatchStroke: {
+              active: currentBg === undefined,
+              strokeColor: annotation.color,
+              title: 'Tint background',
+              onSelect: () => {
+                this.store.update(annotation.id, {backgroundColor: undefined});
+              },
+            },
+            allowTransparent: {
+              active: currentBg === 'transparent',
+              title: 'Transparent background',
+              onSelect: () => {
+                this.store.update(annotation.id, {
+                  backgroundColor: 'transparent',
+                });
+              },
+            },
             onChange: (backgroundColor: string) => {
               this.store.update(annotation.id, {backgroundColor});
             },
@@ -826,8 +1028,9 @@ export class AnnotationsTab implements Tab {
               max: 160,
               step: 5,
               value: curVal,
-              oninput: (e: Event) => {
-                const val = parseInt((e.target as HTMLInputElement).value, 10);
+              oninput: (event: Event) => {
+                const target = event.target as HTMLInputElement;
+                const val = parseInt(target.value, 10);
                 this.store.update(annotation.id, {
                   curvature: val,
                   controlOffset:
@@ -846,32 +1049,29 @@ export class AnnotationsTab implements Tab {
       );
     }
 
-    return m(
-      Popup,
+    const trigger = m(
+      'button.pf-timeline-annotations__color-trigger',
       {
-        fitContent: true,
-        position: PopupPosition.Bottom,
-        className: 'pf-timeline-annotations__style-popup',
-        trigger: m(
-          'button.pf-timeline-annotations__color-trigger',
-          {
-            type: 'button',
-            title: 'Style & color options',
-          },
-          m('.pf-timeline-annotations__color-preview', {
-            style: {
-              borderColor: currentColor,
-              backgroundColor:
-                currentFill === 'transparent'
-                  ? 'transparent'
-                  : (currentFill ?? currentColor),
-              opacity: currentFill === 'transparent' ? 1 : currentOpacity,
-            },
-          }),
-          m(Icon, {icon: 'arrow_drop_down'}),
-        ),
+        type: 'button',
+        title: 'Style & color options',
       },
-      m('.pf-timeline-annotations-style-panel', sections),
+      m('.pf-timeline-annotations__color-preview', {
+        style: {
+          borderColor: currentColor,
+          backgroundColor: fillCss,
+        },
+      }),
+      m(Icon, {icon: 'arrow_drop_down'}),
+    );
+
+    const content = m('.pf-timeline-annotations-style-panel', sections);
+
+    return this.renderAnimatedPopup(
+      `style-${annotation.id}`,
+      trigger,
+      PopupPosition.Bottom,
+      'pf-timeline-annotations__style-popup',
+      content,
     );
   }
 
@@ -886,8 +1086,8 @@ export class AnnotationsTab implements Tab {
       m(
         '.pf-timeline-annotations-clear-dialog',
         {
-          onclick: (e: MouseEvent) => {
-            e.stopPropagation();
+          onclick: (event: MouseEvent) => {
+            event.stopPropagation();
           },
         },
         m(
@@ -916,6 +1116,7 @@ export class AnnotationsTab implements Tab {
             variant: ButtonVariant.Filled,
             label: 'Confirm clear',
             onclick: () => {
+              this.closeAllPopups();
               this.store.replaceAll([]);
               this.pendingClearConfirm = false;
             },
@@ -958,9 +1159,42 @@ export class AnnotationsTab implements Tab {
   private renderAnnotationItem(annotation: Annotation): m.Children {
     const isSelected = this.store.selectedId === annotation.id;
     const isHidden = this.store.isHidden(annotation.id);
+    const isDeleting = this.deletingIds.has(annotation.id);
     const renderInfo = this.overlay.lastRender.get(annotation.id);
     const kindLabel =
       annotation.kind.charAt(0).toUpperCase() + annotation.kind.slice(1);
+
+    const kindTrigger = m(
+      'button.pf-timeline-annotations-icon.pf-timeline-annotations-kind-trigger',
+      {
+        type: 'button',
+        title: `${kindLabel} annotation (click to change type)`,
+      },
+      m(Icon, {icon: getKindIcon(annotation.kind)}),
+      m(Icon, {
+        icon: 'arrow_drop_down',
+        className: 'pf-timeline-annotations-dropdown-caret',
+      }),
+    );
+
+    const kindMenu = m(
+      '.pf-timeline-annotations-kind-menu',
+      ANNOTATION_KINDS.map(({kind, icon, label}) =>
+        m(
+          `button.pf-timeline-annotations-kind-option.${Popup.DISMISS_POPUP_GROUP_CLASS}`,
+          {
+            key: kind,
+            type: 'button',
+            className: annotation.kind === kind ? 'pf-active' : '',
+            onclick: () => {
+              this.store.changeKind(annotation.id, kind);
+            },
+          },
+          m(Icon, {icon}),
+          m('span', label),
+        ),
+      ),
+    );
 
     return m(
       '.pf-timeline-annotations-item',
@@ -969,6 +1203,7 @@ export class AnnotationsTab implements Tab {
         className: [
           isSelected ? 'pf-timeline-annotations-item--selected' : '',
           isHidden ? 'pf-timeline-annotations-item--hidden' : '',
+          isDeleting ? 'pf-timeline-annotations-item--deleting' : '',
         ]
           .filter(Boolean)
           .join(' '),
@@ -990,39 +1225,12 @@ export class AnnotationsTab implements Tab {
           );
         },
       },
-      m(
-        Popup,
-        {
-          fitContent: true,
-          position: PopupPosition.BottomStart,
-          className: 'pf-timeline-annotations__kind-popup',
-          trigger: m(
-            'button.pf-timeline-annotations-icon.pf-timeline-annotations-kind-trigger',
-            {
-              type: 'button',
-              title: `${kindLabel} annotation (click to change type)`,
-            },
-            m(Icon, {icon: getKindIcon(annotation.kind)}),
-          ),
-        },
-        m(
-          '.pf-timeline-annotations-kind-menu',
-          ANNOTATION_KINDS.map(({kind, icon, label}) =>
-            m(
-              `button.pf-timeline-annotations-kind-option.${Popup.DISMISS_POPUP_GROUP_CLASS}`,
-              {
-                key: kind,
-                type: 'button',
-                className: annotation.kind === kind ? 'pf-active' : '',
-                onclick: () => {
-                  this.store.changeKind(annotation.id, kind);
-                },
-              },
-              m(Icon, {icon}),
-              m('span', label),
-            ),
-          ),
-        ),
+      this.renderAnimatedPopup(
+        `kind-${annotation.id}`,
+        kindTrigger,
+        PopupPosition.BottomStart,
+        'pf-timeline-annotations__kind-popup',
+        kindMenu,
       ),
       m(TextInput, {
         className: 'pf-timeline-annotations-title-input',
@@ -1052,7 +1260,7 @@ export class AnnotationsTab implements Tab {
         '.pf-timeline-annotations-actions',
         m(Button, {
           icon: 'my_location',
-          title: 'Jump to annotation on timeline',
+          title: 'Focus annotation on timeline',
           compact: true,
           onclick: (event: MouseEvent) => {
             event.stopPropagation();
@@ -1075,7 +1283,7 @@ export class AnnotationsTab implements Tab {
           intent: Intent.Danger,
           onclick: (event: MouseEvent) => {
             event.stopPropagation();
-            this.store.remove(annotation.id);
+            this.deleteAnnotationAnimated(annotation.id);
           },
         }),
       ),
@@ -1116,15 +1324,8 @@ export class AnnotationsTab implements Tab {
   }
 
   private jumpTo(annotation: Annotation): void {
+    this.store.select(annotation.id);
     const target = getJumpTarget(annotation, this.store);
-    const existingTrackUris = target.trackUris.filter(
-      (uri) => this.trace.currentWorkspace?.getTrackByUri?.(uri) !== undefined,
-    );
-    this.trace.selection?.selectArea?.({
-      start: target.start,
-      end: target.end,
-      trackUris: existingTrackUris,
-    });
 
     let primaryTrackUri = target.trackUris.find(
       (uri) => this.trace.currentWorkspace?.getTrackByUri?.(uri) !== undefined,
@@ -1170,5 +1371,7 @@ export class AnnotationsTab implements Tab {
           : {}),
       });
     }
+
+    this.trace.tabs?.showTab?.(ANNOTATIONS_TAB_URI);
   }
 }

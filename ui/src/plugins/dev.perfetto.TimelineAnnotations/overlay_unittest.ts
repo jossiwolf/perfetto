@@ -22,7 +22,11 @@ import type {CanvasColors} from '../../public/canvas_colors';
 import type {TrackBounds} from '../../public/track';
 import {TrackNode} from '../../public/workspace';
 import {AnnotationStore} from './model';
-import {AnnotationsOverlay, colorWithAlpha} from './overlay';
+import {
+  AnnotationsOverlay,
+  colorWithAlpha,
+  drawSmoothPolyline,
+} from './overlay';
 import {ToolController} from './tools';
 
 interface DrawCallRecord {
@@ -620,7 +624,7 @@ describe('TimelineAnnotations: overlay.ts', () => {
     expect(
       calls.some(
         (c) =>
-          c.method === 'fillRect' && c.fillStyle === 'rgba(229, 57, 53, 0.12)',
+          c.method === 'fillRect' && c.fillStyle === 'rgba(229, 57, 53, 0.2)',
       ),
     ).toBe(true);
     expect(
@@ -632,7 +636,7 @@ describe('TimelineAnnotations: overlay.ts', () => {
     // ellipse fills and strokes with #43a047
     expect(
       calls.some(
-        (c) => c.method === 'fill' && c.fillStyle === 'rgba(67, 160, 71, 0.12)',
+        (c) => c.method === 'fill' && c.fillStyle === 'rgba(67, 160, 71, 0.2)',
       ),
     ).toBe(true);
     expect(
@@ -898,5 +902,105 @@ describe('TimelineAnnotations: overlay.ts', () => {
     expect(overlay.getInteractionZones(interactionCtx).length).toBeGreaterThan(
       0,
     );
+  });
+
+  test('renders title pill badges on canvas for annotations with title', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    store.add({
+      kind: 'rect',
+      title: 'Active Rect Title',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    store.add({
+      kind: 'arrow',
+      title: 'Arrow Flow',
+      color: '#00897b',
+      from: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(100n), trackUri: 'track_1', yFrac: 0.5},
+      },
+      to: {
+        kind: 'point',
+        point: {ts: Time.fromRaw(300n), trackUri: 'track_1', yFrac: 0.5},
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    const rectTitleCall = calls.find(
+      (c) => c.method === 'fillText' && c.args[0] === 'Active Rect Title',
+    );
+    expect(rectTitleCall).toBeDefined();
+
+    const arrowTitleCall = calls.find(
+      (c) => c.method === 'fillText' && c.args[0] === 'Arrow Flow',
+    );
+    expect(arrowTitleCall).toBeDefined();
+  });
+
+  test('renders contrast halo casing before colored strokes', () => {
+    const store = new AnnotationStore();
+    const tools = new ToolController(store, {requestRedraw: () => {}});
+    const overlay = new AnnotationsOverlay(store, tools);
+
+    store.add({
+      kind: 'rect',
+      color: '#e53935',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const {ctx, calls} = createFakeCanvasContext();
+    overlay.render(ctx, timescale, size, visibleTracks, theme, rootNode);
+
+    // Halo casing strokeRect with lineWidth 5 and theme.COLOR_BACKGROUND with alpha 0.85
+    const haloStroke = calls.find(
+      (c) =>
+        c.method === 'strokeRect' &&
+        c.lineWidth === 5 &&
+        c.strokeStyle === 'rgba(17, 17, 17, 0.85)',
+    );
+    expect(haloStroke).toBeDefined();
+
+    // Primary strokeRect with lineWidth 2.5
+    const primaryStroke = calls.find(
+      (c) =>
+        c.method === 'strokeRect' &&
+        c.lineWidth === 2.5 &&
+        c.strokeStyle === '#e53935',
+    );
+    expect(primaryStroke).toBeDefined();
+  });
+
+  test('drawSmoothPolyline connects with lineTo for 2 points and quadraticCurveTo for >= 3 points', () => {
+    const {ctx, calls} = createFakeCanvasContext();
+    drawSmoothPolyline(ctx, [
+      {x: 0, y: 0},
+      {x: 10, y: 10},
+    ]);
+    expect(calls.some((c) => c.method === 'lineTo')).toBe(true);
+    expect(calls.some((c) => c.method === 'quadraticCurveTo')).toBe(false);
+
+    const {ctx: ctx3, calls: calls3} = createFakeCanvasContext();
+    drawSmoothPolyline(ctx3, [
+      {x: 0, y: 0},
+      {x: 10, y: 20},
+      {x: 20, y: 0},
+    ]);
+    expect(calls3.some((c) => c.method === 'quadraticCurveTo')).toBe(true);
+    expect(calls3.some((c) => c.method === 'lineTo')).toBe(true);
   });
 });

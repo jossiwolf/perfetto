@@ -19,7 +19,7 @@ import {Intent} from '../../widgets/common';
 import {showModal} from '../../widgets/modal';
 import m from 'mithril';
 import {AnnotationStore} from './model';
-import {TOOL_KINDS, ToolController} from './tools';
+import {TOOL_KINDS, ToolController, type ToolControllerOptions} from './tools';
 import {AnnotationsOverlay} from './overlay';
 import {ANNOTATIONS_TAB_URI, AnnotationsTab} from './annotations_tab';
 import {AnnotationTrack} from './annotation_track';
@@ -46,24 +46,45 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
     const autosaveStore = new AutosaveStore();
     const autosaveSetting = registerAutosaveSetting(trace);
 
-    const tools = new ToolController(store, {
+    let lastAnnotationSelectTime = 0;
+
+    const originalSelect = store.select.bind(store);
+    store.select = (id: string | undefined) => {
+      if (id !== undefined) {
+        lastAnnotationSelectTime = performance.now();
+        trace.tabs.showTab(ANNOTATIONS_TAB_URI);
+      }
+      originalSelect(id);
+    };
+
+    const toolOptions = {
       requestRedraw: () => trace.raf.scheduleFullRedraw(),
+      onAnnotationSelected: () => {
+        lastAnnotationSelectTime = performance.now();
+        trace.tabs.showTab(ANNOTATIONS_TAB_URI);
+      },
       onAnnotationCreated: (_id: string) => {
+        lastAnnotationSelectTime = performance.now();
         trace.tabs.showTab(ANNOTATIONS_TAB_URI);
         trace.raf.scheduleFullRedraw();
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
-            const el = document.querySelector(
+            const inputElement = document.querySelector(
               `.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input`,
             ) as HTMLInputElement | null;
-            if (el && tools.tool === 'label') {
-              el.focus();
-              el.select();
+            if (inputElement && tools.tool === 'label') {
+              inputElement.focus();
+              inputElement.select();
             }
           });
         });
       },
-    });
+    };
+
+    const tools = new ToolController(
+      store,
+      toolOptions as unknown as ToolControllerOptions,
+    );
 
     const overlay = new AnnotationsOverlay(store, tools, {
       trackExists: (uri) =>
@@ -123,19 +144,24 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
       return false;
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+      ) {
         return;
       }
-      const target = e.target as Element | null;
+      const target = event.target as Element | null;
       if (isEditable(target) || isEditable(document.activeElement)) {
         return;
       }
       if (
-        (e.key === 'Backspace' || e.key === 'Delete') &&
+        (event.key === 'Backspace' || event.key === 'Delete') &&
         store.selectedId !== undefined
       ) {
-        e.preventDefault();
+        event.preventDefault();
         store.remove(store.selectedId);
         trace.raf.scheduleFullRedraw();
         return;
@@ -143,18 +169,18 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
       if (
         store.selectedId !== undefined &&
         tools.tool === 'label' &&
-        e.key.length === 1 &&
-        !e.ctrlKey &&
-        !e.metaKey &&
-        !e.altKey
+        event.key.length === 1 &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
       ) {
         const selected = store.get(store.selectedId);
         if (selected?.kind === 'label') {
-          const el = document.querySelector(
+          const inputElement = document.querySelector(
             '.pf-timeline-annotations-item--selected .pf-timeline-annotations-title-input input, .pf-timeline-annotations-item--selected input.pf-timeline-annotations-title-input',
           ) as HTMLInputElement | null;
-          if (el) {
-            el.focus();
+          if (inputElement) {
+            inputElement.focus();
           }
         }
       }
@@ -164,6 +190,42 @@ export default class TimelineAnnotationsPlugin implements PerfettoPlugin {
     trace.trash.use({
       [Symbol.dispose]: () => {
         document.removeEventListener('keydown', handleKeyDown);
+      },
+    });
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (store.selectedId === undefined) {
+        return;
+      }
+      const target = event.target as Element | null;
+      if (!target) {
+        return;
+      }
+      if (
+        target.closest(
+          '.pf-timeline-annotations-tab, .pf-popup, .pf-popup-portal, .pf-modal-backdrop, .pf-modal-dialog',
+        )
+      ) {
+        return;
+      }
+      if (
+        target.closest('.pf-virtual-overlay-canvas, canvas, .pf-timeline-page')
+      ) {
+        setTimeout(() => {
+          if (
+            performance.now() - lastAnnotationSelectTime > 50 &&
+            store.selectedId !== undefined
+          ) {
+            store.select(undefined);
+          }
+        }, 0);
+      }
+    };
+
+    document.addEventListener('click', handleDocumentClick);
+    trace.trash.use({
+      [Symbol.dispose]: () => {
+        document.removeEventListener('click', handleDocumentClick);
       },
     });
 

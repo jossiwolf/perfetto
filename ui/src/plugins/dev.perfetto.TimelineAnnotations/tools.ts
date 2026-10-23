@@ -36,6 +36,7 @@ import {
   recognizeShape,
   type RectBounds,
   simplifyPath,
+  smoothPath,
 } from './geometry';
 
 export type ToolKind =
@@ -91,6 +92,7 @@ export interface ToolControllerOptions {
   readonly requestRedraw: () => void;
   readonly defaultColor?: () => string;
   readonly onAnnotationCreated?: (id: string) => void;
+  readonly onAnnotationSelected?: (id: string) => void;
 }
 
 export interface AnnotationGeometry {
@@ -137,6 +139,7 @@ const PEN_SHAPE_MIN_DIMENSION_PX = 10;
 export class ToolController {
   private readonly store: AnnotationStore;
   private readonly opts: ToolControllerOptions;
+  private readonly createdFromRects = new Map<string, RectBounds>();
   private isDrawingModeActive: boolean = false;
   private activeToolKind: ToolKind = 'rect';
   private lastCreationTool: Exclude<ToolKind, 'select'> = 'rect';
@@ -291,6 +294,25 @@ export class ToolController {
     }
   }
 
+  consumeCreatedRect(id: string): RectBounds | undefined {
+    const rect = this.createdFromRects.get(id);
+    if (rect !== undefined) {
+      this.createdFromRects.delete(id);
+    }
+    return rect;
+  }
+
+  readonly requestRedraw = (): void => {
+    this.opts.requestRedraw();
+  };
+
+  hitTestPoint(point: Point2D, rootNode?: TrackNode): boolean {
+    return (
+      this.hitTestCurveHandle(point, rootNode) !== undefined ||
+      this.hitTestAnnotation(point, rootNode) !== undefined
+    );
+  }
+
   onPointerDown(event: OverlayPointerEvent): void {
     const pointerPos: Point2D = {x: event.x, y: event.y};
 
@@ -302,6 +324,7 @@ export class ToolController {
         hitCurveArrow.end !== undefined
       ) {
         this.store.select(hitCurveArrow.id);
+        this.opts.onAnnotationSelected?.(hitCurveArrow.id);
         this.activeGestureState = {
           tool: 'arrow-curve',
           startEvent: event,
@@ -317,6 +340,10 @@ export class ToolController {
 
       const hitAnnotation = this.hitTestAnnotation(pointerPos, event.rootNode);
       if (!this.isDrawingModeActive && hitAnnotation === undefined) {
+        if (!event.shiftKey && this.store.selectedId !== undefined) {
+          this.store.select(undefined);
+          this.opts.requestRedraw();
+        }
         return;
       }
 
@@ -326,9 +353,11 @@ export class ToolController {
             this.store.select(undefined);
           } else {
             this.store.select(hitAnnotation.id);
+            this.opts.onAnnotationSelected?.(hitAnnotation.id);
           }
         } else {
           this.store.select(hitAnnotation.id);
+          this.opts.onAnnotationSelected?.(hitAnnotation.id);
         }
 
         const targetAnnotation = this.store.get(hitAnnotation.id);
@@ -358,6 +387,9 @@ export class ToolController {
           isDrag: false,
         };
       } else {
+        if (!event.shiftKey) {
+          this.store.select(undefined);
+        }
         this.activeGestureState = {
           tool: 'select',
           startEvent: event,
@@ -619,6 +651,16 @@ export class ToolController {
           const endTs = Time.max(startEvent.ts, event.ts);
           const yMin = Math.min(startEvent.y, event.y);
           const yMax = Math.max(startEvent.y, event.y);
+          const xMin = Math.min(startEvent.x, event.x);
+          const xMax = Math.max(startEvent.x, event.x);
+          const drawnRect: RectBounds = {
+            left: xMin,
+            top: yMin,
+            right: xMax,
+            bottom: yMax,
+            width: xMax - xMin,
+            height: yMax - yMin,
+          };
           const trackUris = areaForTrackRange(yMin, yMax, event.tracks);
           const trackNames = trackUris.map(
             (uri) =>
@@ -642,6 +684,7 @@ export class ToolController {
               trackNames,
             },
           });
+          this.createdFromRects.set(created.id, drawnRect);
           this.store.select(created.id);
           this.opts.onAnnotationCreated?.(created.id);
         }
@@ -696,6 +739,7 @@ export class ToolController {
                   trackNames,
                 },
               });
+              this.createdFromRects.set(created.id, recognized.bbox);
               this.store.select(created.id);
               this.opts.onAnnotationCreated?.(created.id);
             }
@@ -739,13 +783,16 @@ export class ToolController {
               }
             }
           } else {
-            const strokeBbox = bboxOf(simplified);
+            const jitterSimplified = simplifyPath(collectedPoints, 2.5);
+            const smoothed = smoothPath(jitterSimplified, 2);
+            const pathPoints = simplifyPath(smoothed, 1.2);
+            const strokeBbox = bboxOf(pathPoints);
             if (
               strokeBbox.width >= PEN_SHAPE_MIN_DIMENSION_PX ||
               strokeBbox.height >= PEN_SHAPE_MIN_DIMENSION_PX
             ) {
               const anchoredPoints: AnchoredPoint[] = [];
-              for (const itemPoint of simplified) {
+              for (const itemPoint of pathPoints) {
                 const anchor = pointAtY(itemPoint.y, event.tracks);
                 if (anchor !== undefined) {
                   anchoredPoints.push({

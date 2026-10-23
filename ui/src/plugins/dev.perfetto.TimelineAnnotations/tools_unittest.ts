@@ -705,4 +705,98 @@ describe('TimelineAnnotations: tools.ts', () => {
     expect(annotations[0].fillColor).toBe('#123456');
     expect(annotations[0].fillOpacity).toBe(0.4);
   });
+
+  test('calls onAnnotationSelected when selecting annotation or curve handle', () => {
+    const onAnnotationSelected = vi.fn();
+    const {store, controller} = setupController({onAnnotationSelected});
+
+    const rect = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const geometries = new Map<string, AnnotationGeometry>();
+    geometries.set(rect.id, {
+      id: rect.id,
+      kind: 'rect',
+      bbox: {
+        left: 100,
+        top: 100,
+        right: 200,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      },
+    });
+    controller.setGeometryProvider(() => geometries);
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 150, posY: 150, buttons: 1}),
+    );
+    expect(onAnnotationSelected).toHaveBeenCalledWith(rect.id);
+  });
+
+  test('hitTestPoint returns true on hit and false on miss', () => {
+    const {store, controller} = setupController();
+    const rect = store.add({
+      kind: 'rect',
+      color: '#ff0000',
+      anchor: {
+        start: Time.fromRaw(100n),
+        end: Time.fromRaw(200n),
+        trackUris: ['track_1'],
+      },
+    });
+
+    const geometries = new Map<string, AnnotationGeometry>();
+    geometries.set(rect.id, {
+      id: rect.id,
+      kind: 'rect',
+      bbox: {
+        left: 100,
+        top: 100,
+        right: 200,
+        bottom: 200,
+        width: 100,
+        height: 100,
+      },
+    });
+    controller.setGeometryProvider(() => geometries);
+
+    expect(controller.hitTestPoint({x: 150, y: 150}, rootNode)).toBe(true);
+    expect(controller.hitTestPoint({x: 500, y: 500}, rootNode)).toBe(false);
+  });
+
+  test('consumeCreatedRect returns and clears rect recorded during creation', () => {
+    const {store, controller} = setupController();
+    controller.setDrawingMode(true);
+    controller.setTool('rect');
+
+    controller.onPointerDown(
+      createPointerEvent({posX: 100, posY: 120, buttons: 1}),
+    );
+    controller.onPointerMove(
+      createPointerEvent({posX: 250, posY: 220, buttons: 1}),
+    );
+    controller.onPointerUp(
+      createPointerEvent({posX: 250, posY: 220, buttons: 0}),
+    );
+
+    const createdId = store.list()[0].id;
+    const consumed = controller.consumeCreatedRect(createdId);
+    expect(consumed).toEqual({
+      left: 100,
+      top: 120,
+      right: 250,
+      bottom: 220,
+      width: 150,
+      height: 100,
+    });
+    expect(controller.consumeCreatedRect(createdId)).toBeUndefined();
+  });
 });

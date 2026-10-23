@@ -114,6 +114,61 @@ export function simplifyPath(
   ];
 }
 
+export function smoothPath(
+  points: ReadonlyArray<Point2D>,
+  iterations = 2,
+): Point2D[] {
+  if (points.length <= 2 || iterations <= 0) {
+    return points.map((point) => ({x: point.x, y: point.y}));
+  }
+
+  let currentPoints: Point2D[] = points.map((point) => ({
+    x: point.x,
+    y: point.y,
+  }));
+
+  for (let iter = 0; iter < iterations; iter += 1) {
+    // 1. Chaikin corner-cutting preserving endpoints
+    const chaikin: Point2D[] = [{x: currentPoints[0].x, y: currentPoints[0].y}];
+    for (let i = 0; i < currentPoints.length - 1; i += 1) {
+      const p0 = currentPoints[i];
+      const p1 = currentPoints[i + 1];
+      chaikin.push({
+        x: 0.75 * p0.x + 0.25 * p1.x,
+        y: 0.75 * p0.y + 0.25 * p1.y,
+      });
+      chaikin.push({
+        x: 0.25 * p0.x + 0.75 * p1.x,
+        y: 0.25 * p0.y + 0.75 * p1.y,
+      });
+    }
+    chaikin.push({
+      x: currentPoints[currentPoints.length - 1].x,
+      y: currentPoints[currentPoints.length - 1].y,
+    });
+
+    // 2. 3-point Gaussian pass preserving endpoints
+    const gaussian: Point2D[] = [{x: chaikin[0].x, y: chaikin[0].y}];
+    for (let j = 1; j < chaikin.length - 1; j += 1) {
+      const prev = chaikin[j - 1];
+      const curr = chaikin[j];
+      const next = chaikin[j + 1];
+      gaussian.push({
+        x: 0.25 * prev.x + 0.5 * curr.x + 0.25 * next.x,
+        y: 0.25 * prev.y + 0.5 * curr.y + 0.25 * next.y,
+      });
+    }
+    gaussian.push({
+      x: chaikin[chaikin.length - 1].x,
+      y: chaikin[chaikin.length - 1].y,
+    });
+
+    currentPoints = gaussian;
+  }
+
+  return currentPoints;
+}
+
 export function recognizeShape(
   pxPoints: ReadonlyArray<Point2D>,
 ): RecognizedShape {

@@ -150,6 +150,71 @@ function drawRoundedRect(
   ctx.closePath();
 }
 
+export function drawSmoothPolyline(
+  ctx: CanvasRenderingContext2D,
+  points: ReadonlyArray<Point2D>,
+): void {
+  if (points.length === 0) {
+    return;
+  }
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.moveTo(points[0].x, points[0].y);
+  if (points.length === 2 || typeof ctx.quadraticCurveTo !== 'function') {
+    for (let i = 1; i < points.length; i += 1) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    return;
+  }
+  for (let i = 1; i < points.length - 1; i += 1) {
+    const midX = (points[i].x + points[i + 1].x) / 2;
+    const midY = (points[i].y + points[i + 1].y) / 2;
+    ctx.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+  }
+  ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+}
+
+function renderTitlePill(
+  ctx: CanvasRenderingContext2D,
+  title: string,
+  color: string,
+  themeBg: string,
+  target:
+    | {readonly kind: 'rect-or-ellipse'; readonly bbox: RectBounds}
+    | {readonly kind: 'path'; readonly point: Point2D}
+    | {readonly kind: 'arrow'; readonly midpoint: Point2D},
+): void {
+  const titleText = truncateText(title.trim(), 36);
+  ctx.font = '600 11px sans-serif';
+  const textWidth = ctx.measureText(titleText).width;
+  const pillW = textWidth + 12;
+  const pillH = 18;
+  let pillX: number;
+  let pillY: number;
+
+  if (target.kind === 'rect-or-ellipse') {
+    pillX = target.bbox.left + 4;
+    pillY = target.bbox.top >= 22 ? target.bbox.top - 20 : target.bbox.top + 4;
+  } else if (target.kind === 'path') {
+    pillX = target.point.x + 4;
+    pillY = Math.max(2, target.point.y - 20);
+  } else {
+    pillX = target.midpoint.x - pillW / 2;
+    pillY = Math.max(2, target.midpoint.y - pillH - 6);
+  }
+
+  drawRoundedRect(ctx, pillX, pillY, pillW, pillH, 4);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = themeBg;
+  ctx.setLineDash([]);
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(titleText, pillX + 6, pillY + pillH / 2);
+}
+
 export class AnnotationsOverlay implements Overlay {
   private readonly store: AnnotationStore;
   private readonly tools: ToolController;
@@ -160,6 +225,23 @@ export class AnnotationsOverlay implements Overlay {
   >();
   private readonly mergedGeometries = new Map<string, AnnotationGeometry>();
   private renderedAnnotationInfo = new Map<string, RenderedAnnotationInfo>();
+  private readonly creationAnims = new Map<
+    string,
+    {fromRect: RectBounds; startMs: number}
+  >();
+  private readonly visibilityAnims = new Map<
+    string,
+    {fromAlpha: number; toAlpha: number; startMs: number}
+  >();
+  private readonly lastHiddenState = new Map<string, boolean>();
+  private readonly lastKnownAnnotations = new Map<
+    string,
+    {annotation: Annotation; geometry: AnnotationGeometry}
+  >();
+  private readonly deleteAnims = new Map<
+    string,
+    {annotation: Annotation; geometry: AnnotationGeometry; startMs: number}
+  >();
 
   constructor(
     store: AnnotationStore,
@@ -255,6 +337,40 @@ export class AnnotationsOverlay implements Overlay {
   ): void {
     ctx.save();
     try {
+      const now =
+        typeof performance !== 'undefined' ? performance.now() : Date.now();
+      let hasActiveAnims = false;
+
+      // Check for deleted annotations from last known rendered set
+      for (const [id, item] of this.lastKnownAnnotations.entries()) {
+        if (this.store.get(id) === undefined) {
+          this.deleteAnims.set(id, {
+            annotation: item.annotation,
+            geometry: item.geometry,
+            startMs: now,
+          });
+          this.lastKnownAnnotations.delete(id);
+          this.creationAnims.delete(id);
+          this.visibilityAnims.delete(id);
+          this.lastHiddenState.delete(id);
+        }
+      }
+
+      // Check visibility state changes
+      const annotationsList = this.store.list();
+      for (const annotation of annotationsList) {
+        const isCurrentlyHidden = this.store.isHidden(annotation.id);
+        const wasHidden = this.lastHiddenState.get(annotation.id);
+        if (wasHidden !== undefined && wasHidden !== isCurrentlyHidden) {
+          this.visibilityAnims.set(annotation.id, {
+            fromAlpha: wasHidden ? 0 : 1,
+            toAlpha: isCurrentlyHidden ? 0 : 1,
+            startMs: now,
+          });
+        }
+        this.lastHiddenState.set(annotation.id, isCurrentlyHidden);
+      }
+
       const clipLeft = timescale.pxBounds.left;
       ctx.beginPath();
       ctx.rect(clipLeft, 0, Math.max(0, size.width - clipLeft), size.height);
@@ -276,12 +392,41 @@ export class AnnotationsOverlay implements Overlay {
 
       const nextRenderedInfo = new Map<string, RenderedAnnotationInfo>();
       const geometriesMap = new Map<string, AnnotationGeometry>();
-      const annotationsList = this.store.list();
 
       // Pass 1: Resolve geometry and compute status for all visible non-hidden annotations
       for (const annotation of annotationsList) {
-        if (this.store.isHidden(annotation.id)) {
+        const isCurrentlyHidden = this.store.isHidden(annotation.id);
+        let animAlpha = 1;
+        const visAnim = this.visibilityAnims.get(annotation.id);
+        if (visAnim !== undefined) {
+          const elapsed = now - visAnim.startMs;
+          if (elapsed < 180) {
+            hasActiveAnims = true;
+            const t = Math.max(0, Math.min(1, elapsed / 180));
+            const ease = 1 - Math.pow(1 - t, 3);
+            animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
+          } else {
+            this.visibilityAnims.delete(annotation.id);
+            if (visAnim.toAlpha === 0) {
+              animAlpha = 0;
+            }
+          }
+        } else if (isCurrentlyHidden) {
+          animAlpha = 0;
+        }
+
+        if (animAlpha <= 0) {
           continue;
+        }
+
+        if (annotation.kind === 'rect' || annotation.kind === 'ellipse') {
+          const fromRect = this.tools.consumeCreatedRect?.(annotation.id);
+          if (fromRect !== undefined) {
+            this.creationAnims.set(annotation.id, {
+              fromRect,
+              startMs: now,
+            });
+          }
         }
 
         switch (annotation.kind) {
@@ -508,7 +653,7 @@ export class AnnotationsOverlay implements Overlay {
 
       // Pass 2: Draw non-arrow shapes
       for (const annotation of annotationsList) {
-        if (this.store.isHidden(annotation.id) || annotation.kind === 'arrow') {
+        if (annotation.kind === 'arrow') {
           continue;
         }
 
@@ -518,107 +663,182 @@ export class AnnotationsOverlay implements Overlay {
           continue;
         }
 
+        let animAlpha = 1;
+        const visAnim = this.visibilityAnims.get(annotation.id);
+        if (visAnim !== undefined) {
+          const elapsed = now - visAnim.startMs;
+          if (elapsed < 180) {
+            const t = Math.max(0, Math.min(1, elapsed / 180));
+            const ease = 1 - Math.pow(1 - t, 3);
+            animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
+          }
+        } else if (this.store.isHidden(annotation.id)) {
+          animAlpha = 0;
+        }
+
+        if (animAlpha <= 0) {
+          continue;
+        }
+
+        this.lastKnownAnnotations.set(annotation.id, {annotation, geometry});
+
         if (geometry.bbox.right < 0 || geometry.bbox.left > size.width) {
           continue;
         }
 
-        if (info.status === 'unanchored') {
-          ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
-          ctx.fillRect(
-            geometry.bbox.left,
-            0,
-            Math.max(1, geometry.bbox.width),
-            size.height,
-          );
-          ctx.strokeStyle = colorWithAlpha(annotation.color, 0.5);
-          ctx.lineWidth = 1;
-          ctx.setLineDash([4, 4]);
-          ctx.strokeRect(
-            geometry.bbox.left,
-            0,
-            Math.max(1, geometry.bbox.width),
-            size.height,
-          );
-          ctx.setLineDash([]);
+        const isSelected = this.store.selectedId === annotation.id;
 
-          const displayTitle = truncateText(
-            annotation.title ?? annotation.id,
-            24,
-          );
-          ctx.font = '10px sans-serif';
-          ctx.fillStyle = theme.COLOR_TEXT_MUTED;
-          ctx.fillText(displayTitle, geometry.bbox.left + 4, 16);
-          continue;
-        }
+        ctx.save();
+        try {
+          if (animAlpha < 1) {
+            ctx.globalAlpha = animAlpha;
+          }
 
-        switch (annotation.kind) {
-          case 'rect': {
+          if (info.status === 'unanchored') {
             ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
             ctx.fillRect(
               geometry.bbox.left,
-              geometry.bbox.top,
-              geometry.bbox.width,
-              geometry.bbox.height,
+              0,
+              Math.max(1, geometry.bbox.width),
+              size.height,
             );
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = annotation.color;
-            if (info.status === 'degraded') {
-              ctx.setLineDash([4, 4]);
-            } else {
-              ctx.setLineDash([]);
-            }
+            ctx.strokeStyle = colorWithAlpha(annotation.color, 0.5);
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]);
             ctx.strokeRect(
               geometry.bbox.left,
-              geometry.bbox.top,
-              geometry.bbox.width,
-              geometry.bbox.height,
+              0,
+              Math.max(1, geometry.bbox.width),
+              size.height,
             );
             ctx.setLineDash([]);
-            break;
+
+            const displayTitle = truncateText(
+              annotation.title ?? annotation.id,
+              24,
+            );
+            ctx.font = '10px sans-serif';
+            ctx.fillStyle = theme.COLOR_TEXT_MUTED;
+            ctx.fillText(displayTitle, geometry.bbox.left + 4, 16);
+            continue;
           }
-          case 'ellipse': {
-            ctx.beginPath();
-            const centerX = geometry.bbox.left + geometry.bbox.width / 2;
-            const centerY = geometry.bbox.top + geometry.bbox.height / 2;
-            const radiusX = Math.max(0, geometry.bbox.width / 2);
-            const radiusY = Math.max(0, geometry.bbox.height / 2);
-            ctx.ellipse(centerX, centerY, radiusX, radiusY, 0, 0, 2 * Math.PI);
-            ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
-            ctx.fill();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = annotation.color;
-            if (info.status === 'degraded') {
-              ctx.setLineDash([4, 4]);
+
+          let renderBbox = geometry.bbox;
+          const creationAnim = this.creationAnims.get(annotation.id);
+          if (creationAnim !== undefined) {
+            const elapsed = now - creationAnim.startMs;
+            if (elapsed < 220) {
+              hasActiveAnims = true;
+              const t = Math.max(0, Math.min(1, elapsed / 220));
+              const ease = 1 - Math.pow(1 - t, 3);
+              const left =
+                creationAnim.fromRect.left +
+                (geometry.bbox.left - creationAnim.fromRect.left) * ease;
+              const top =
+                creationAnim.fromRect.top +
+                (geometry.bbox.top - creationAnim.fromRect.top) * ease;
+              const right =
+                creationAnim.fromRect.right +
+                (geometry.bbox.right - creationAnim.fromRect.right) * ease;
+              const bottom =
+                creationAnim.fromRect.bottom +
+                (geometry.bbox.bottom - creationAnim.fromRect.bottom) * ease;
+              renderBbox = {
+                left,
+                top,
+                right,
+                bottom,
+                width: right - left,
+                height: bottom - top,
+              };
             } else {
-              ctx.setLineDash([]);
+              this.creationAnims.delete(annotation.id);
             }
-            ctx.stroke();
-            ctx.setLineDash([]);
-            break;
           }
-          case 'path': {
-            if (geometry.polyline && geometry.polyline.length > 1) {
-              const hasCustomFill =
-                annotation.fillColor !== undefined &&
-                annotation.fillColor !== 'transparent';
 
-              if (hasCustomFill) {
-                ctx.beginPath();
-                ctx.moveTo(geometry.polyline[0].x, geometry.polyline[0].y);
-                for (let i = 1; i < geometry.polyline.length; i += 1) {
-                  ctx.lineTo(geometry.polyline[i].x, geometry.polyline[i].y);
-                }
-                ctx.lineWidth = 6;
-                ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
-                ctx.stroke();
+          switch (annotation.kind) {
+            case 'rect': {
+              ctx.fillStyle = getAnnotationFillStyle(
+                annotation,
+                isSelected ? 0.26 : 0.2,
+              );
+              ctx.fillRect(
+                renderBbox.left,
+                renderBbox.top,
+                renderBbox.width,
+                renderBbox.height,
+              );
+
+              // Contrast halo / casing
+              ctx.lineWidth = isSelected ? 6 : 5;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+              ctx.setLineDash([]);
+              ctx.strokeRect(
+                renderBbox.left,
+                renderBbox.top,
+                renderBbox.width,
+                renderBbox.height,
+              );
+
+              // Primary stroke
+              ctx.lineWidth = isSelected ? 3 : 2.5;
+              ctx.strokeStyle = annotation.color;
+              if (info.status === 'degraded') {
+                ctx.setLineDash([4, 4]);
+              } else {
+                ctx.setLineDash([]);
               }
+              ctx.strokeRect(
+                renderBbox.left,
+                renderBbox.top,
+                renderBbox.width,
+                renderBbox.height,
+              );
+              ctx.setLineDash([]);
 
+              if (
+                annotation.title !== undefined &&
+                annotation.title.trim().length > 0
+              ) {
+                renderTitlePill(
+                  ctx,
+                  annotation.title,
+                  annotation.color,
+                  theme.COLOR_BACKGROUND,
+                  {kind: 'rect-or-ellipse', bbox: renderBbox},
+                );
+              }
+              break;
+            }
+            case 'ellipse': {
               ctx.beginPath();
-              ctx.moveTo(geometry.polyline[0].x, geometry.polyline[0].y);
-              for (let i = 1; i < geometry.polyline.length; i += 1) {
-                ctx.lineTo(geometry.polyline[i].x, geometry.polyline[i].y);
-              }
-              ctx.lineWidth = 2;
+              const centerX = renderBbox.left + renderBbox.width / 2;
+              const centerY = renderBbox.top + renderBbox.height / 2;
+              const radiusX = Math.max(0, renderBbox.width / 2);
+              const radiusY = Math.max(0, renderBbox.height / 2);
+              ctx.ellipse(
+                centerX,
+                centerY,
+                radiusX,
+                radiusY,
+                0,
+                0,
+                2 * Math.PI,
+              );
+              ctx.fillStyle = getAnnotationFillStyle(
+                annotation,
+                isSelected ? 0.26 : 0.2,
+              );
+              ctx.fill();
+
+              // Contrast halo / casing
+              ctx.lineWidth = isSelected ? 6 : 5;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+              ctx.setLineDash([]);
+              ctx.stroke();
+
+              // Primary stroke
+              ctx.lineWidth = isSelected ? 3 : 2.5;
               ctx.strokeStyle = annotation.color;
               if (info.status === 'degraded') {
                 ctx.setLineDash([4, 4]);
@@ -627,60 +847,143 @@ export class AnnotationsOverlay implements Overlay {
               }
               ctx.stroke();
               ctx.setLineDash([]);
+
+              if (
+                annotation.title !== undefined &&
+                annotation.title.trim().length > 0
+              ) {
+                renderTitlePill(
+                  ctx,
+                  annotation.title,
+                  annotation.color,
+                  theme.COLOR_BACKGROUND,
+                  {kind: 'rect-or-ellipse', bbox: renderBbox},
+                );
+              }
+              break;
             }
-            break;
-          }
-          case 'label': {
-            const labelText = truncateText(
-              annotation.title ?? annotation.text,
-              50,
-            );
-            const fontSize = annotation.fontSize ?? 12;
-            const fontFamily = annotation.fontFamily ?? 'sans-serif';
-            ctx.font = `${fontSize}px ${fontFamily}`;
-            const padX = Math.max(6, Math.round(fontSize * 0.5));
+            case 'path': {
+              if (geometry.polyline && geometry.polyline.length > 1) {
+                const hasCustomFill =
+                  annotation.fillColor !== undefined &&
+                  annotation.fillColor !== 'transparent';
 
-            drawRoundedRect(
-              ctx,
-              geometry.bbox.left,
-              geometry.bbox.top,
-              geometry.bbox.width,
-              geometry.bbox.height,
-              4,
-            );
+                if (hasCustomFill) {
+                  ctx.beginPath();
+                  drawSmoothPolyline(ctx, geometry.polyline);
+                  ctx.lineWidth = 6;
+                  ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
+                  ctx.stroke();
+                }
 
-            if (annotation.backgroundColor === 'transparent') {
-              // transparent: do not fill
-            } else if (annotation.backgroundColor !== undefined) {
-              ctx.fillStyle = colorWithAlpha(
-                annotation.backgroundColor,
-                annotation.fillOpacity ?? 0.85,
+                // Contrast halo / casing
+                ctx.beginPath();
+                drawSmoothPolyline(ctx, geometry.polyline);
+                ctx.lineWidth = isSelected ? 6 : 5;
+                ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+                ctx.setLineDash([]);
+                ctx.stroke();
+
+                // Primary stroke
+                ctx.beginPath();
+                drawSmoothPolyline(ctx, geometry.polyline);
+                ctx.lineWidth = isSelected ? 3 : 2.5;
+                ctx.strokeStyle = annotation.color;
+                if (info.status === 'degraded') {
+                  ctx.setLineDash([4, 4]);
+                } else {
+                  ctx.setLineDash([]);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                if (
+                  annotation.title !== undefined &&
+                  annotation.title.trim().length > 0 &&
+                  geometry.polyline.length > 0
+                ) {
+                  renderTitlePill(
+                    ctx,
+                    annotation.title,
+                    annotation.color,
+                    theme.COLOR_BACKGROUND,
+                    {kind: 'path', point: geometry.polyline[0]},
+                  );
+                }
+              }
+              break;
+            }
+            case 'label': {
+              const labelText = truncateText(
+                annotation.title ?? annotation.text,
+                50,
               );
-              ctx.fill();
-            } else {
-              ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
-              ctx.fill();
+              const fontSize = annotation.fontSize ?? 12;
+              const fontFamily = annotation.fontFamily ?? 'sans-serif';
+              ctx.font = `${fontSize}px ${fontFamily}`;
+              const padX = Math.max(6, Math.round(fontSize * 0.5));
+
+              drawRoundedRect(
+                ctx,
+                geometry.bbox.left,
+                geometry.bbox.top,
+                geometry.bbox.width,
+                geometry.bbox.height,
+                4,
+              );
+
+              if (annotation.backgroundColor === 'transparent') {
+                // transparent: do not fill
+              } else if (annotation.backgroundColor !== undefined) {
+                ctx.fillStyle = colorWithAlpha(
+                  annotation.backgroundColor,
+                  annotation.fillOpacity ?? 0.85,
+                );
+                ctx.fill();
+              } else {
+                ctx.fillStyle = getAnnotationFillStyle(annotation, 0.12);
+                ctx.fill();
+              }
+
+              ctx.lineWidth = 1;
+              ctx.strokeStyle = annotation.color;
+              ctx.stroke();
+
+              ctx.fillStyle = annotation.textColor ?? theme.COLOR_TEXT;
+              ctx.textBaseline = 'middle';
+              ctx.fillText(
+                labelText,
+                geometry.bbox.left + padX,
+                geometry.bbox.top + geometry.bbox.height / 2,
+              );
+              break;
             }
-
-            ctx.lineWidth = 1;
-            ctx.strokeStyle = annotation.color;
-            ctx.stroke();
-
-            ctx.fillStyle = annotation.textColor ?? theme.COLOR_TEXT;
-            ctx.textBaseline = 'middle';
-            ctx.fillText(
-              labelText,
-              geometry.bbox.left + padX,
-              geometry.bbox.top + geometry.bbox.height / 2,
-            );
-            break;
           }
+        } finally {
+          ctx.restore();
         }
       }
 
       // Pass 3: Resolve and draw arrows
       for (const annotation of annotationsList) {
-        if (this.store.isHidden(annotation.id) || annotation.kind !== 'arrow') {
+        if (annotation.kind !== 'arrow') {
+          continue;
+        }
+
+        let animAlpha = 1;
+        const visAnim = this.visibilityAnims.get(annotation.id);
+        if (visAnim !== undefined) {
+          const elapsed = now - visAnim.startMs;
+          if (elapsed < 180) {
+            const t = Math.max(0, Math.min(1, elapsed / 180));
+            const ease = 1 - Math.pow(1 - t, 3);
+            animAlpha = visAnim.toAlpha === 0 ? 1 - ease : ease;
+          }
+        } else if (this.store.isHidden(annotation.id)) {
+          animAlpha = 0;
+        }
+
+        if (animAlpha <= 0) {
           continue;
         }
 
@@ -841,7 +1144,9 @@ export class AnnotationsOverlay implements Overlay {
             );
           }
 
-          geometriesMap.set(annotation.id, {
+          const isSelected = this.store.selectedId === annotation.id;
+
+          const arrowGeometry: AnnotationGeometry = {
             id: annotation.id,
             kind: 'arrow',
             bbox: arrowBbox,
@@ -852,14 +1157,49 @@ export class AnnotationsOverlay implements Overlay {
             ...(sampledPolyline !== undefined
               ? {polyline: sampledPolyline}
               : {}),
+          };
+          geometriesMap.set(annotation.id, arrowGeometry);
+          this.lastKnownAnnotations.set(annotation.id, {
+            annotation,
+            geometry: arrowGeometry,
           });
 
           if (arrowBbox.right >= 0 && arrowBbox.left <= size.width) {
-            const hasCustomFill =
-              annotation.fillColor !== undefined &&
-              annotation.fillColor !== 'transparent';
+            ctx.save();
+            try {
+              if (animAlpha < 1) {
+                ctx.globalAlpha = animAlpha;
+              }
 
-            if (hasCustomFill) {
+              const hasCustomFill =
+                annotation.fillColor !== undefined &&
+                annotation.fillColor !== 'transparent';
+
+              if (hasCustomFill) {
+                ctx.beginPath();
+                ctx.moveTo(startPoint.x, startPoint.y);
+                if (controlPoint !== undefined) {
+                  if (typeof ctx.quadraticCurveTo === 'function') {
+                    ctx.quadraticCurveTo(
+                      controlPoint.x,
+                      controlPoint.y,
+                      endPoint.x,
+                      endPoint.y,
+                    );
+                  } else {
+                    for (const pt of sampledPolyline!) {
+                      ctx.lineTo(pt.x, pt.y);
+                    }
+                  }
+                } else {
+                  ctx.lineTo(endPoint.x, endPoint.y);
+                }
+                ctx.lineWidth = 6;
+                ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
+                ctx.stroke();
+              }
+
+              // Contrast halo / casing
               ctx.beginPath();
               ctx.moveTo(startPoint.x, startPoint.y);
               if (controlPoint !== undefined) {
@@ -878,69 +1218,98 @@ export class AnnotationsOverlay implements Overlay {
               } else {
                 ctx.lineTo(endPoint.x, endPoint.y);
               }
-              ctx.lineWidth = 6;
-              ctx.strokeStyle = getAnnotationFillStyle(annotation, 0.22);
-              ctx.stroke();
-            }
-
-            ctx.beginPath();
-            ctx.moveTo(startPoint.x, startPoint.y);
-            if (controlPoint !== undefined) {
-              if (typeof ctx.quadraticCurveTo === 'function') {
-                ctx.quadraticCurveTo(
-                  controlPoint.x,
-                  controlPoint.y,
-                  endPoint.x,
-                  endPoint.y,
-                );
-              } else {
-                for (const pt of sampledPolyline!) {
-                  ctx.lineTo(pt.x, pt.y);
-                }
-              }
-            } else {
-              ctx.lineTo(endPoint.x, endPoint.y);
-            }
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = annotation.color;
-            if (status === 'degraded') {
-              ctx.setLineDash([4, 4]);
-            } else {
+              ctx.lineWidth = isSelected ? 6 : 5;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
               ctx.setLineDash([]);
-            }
-            ctx.stroke();
-            ctx.setLineDash([]);
+              ctx.stroke();
 
-            // Draw arrowhead at endPoint
-            const headLength = 10;
-            const headAngle = Math.PI / 6;
-            const leftArrowPt = {
-              x: endPoint.x - headLength * Math.cos(arrowAngle - headAngle),
-              y: endPoint.y - headLength * Math.sin(arrowAngle - headAngle),
-            };
-            const rightArrowPt = {
-              x: endPoint.x - headLength * Math.cos(arrowAngle + headAngle),
-              y: endPoint.y - headLength * Math.sin(arrowAngle + headAngle),
-            };
+              // Primary stroke
+              ctx.beginPath();
+              ctx.moveTo(startPoint.x, startPoint.y);
+              if (controlPoint !== undefined) {
+                if (typeof ctx.quadraticCurveTo === 'function') {
+                  ctx.quadraticCurveTo(
+                    controlPoint.x,
+                    controlPoint.y,
+                    endPoint.x,
+                    endPoint.y,
+                  );
+                } else {
+                  for (const pt of sampledPolyline!) {
+                    ctx.lineTo(pt.x, pt.y);
+                  }
+                }
+              } else {
+                ctx.lineTo(endPoint.x, endPoint.y);
+              }
+              ctx.lineWidth = isSelected ? 3 : 2.5;
+              ctx.strokeStyle = annotation.color;
+              if (status === 'degraded') {
+                ctx.setLineDash([4, 4]);
+              } else {
+                ctx.setLineDash([]);
+              }
+              ctx.stroke();
+              ctx.setLineDash([]);
 
-            if (hasCustomFill) {
+              // Draw arrowhead at endPoint
+              const headLength = 10;
+              const headAngle = Math.PI / 6;
+              const leftArrowPt = {
+                x: endPoint.x - headLength * Math.cos(arrowAngle - headAngle),
+                y: endPoint.y - headLength * Math.sin(arrowAngle - headAngle),
+              };
+              const rightArrowPt = {
+                x: endPoint.x - headLength * Math.cos(arrowAngle + headAngle),
+                y: endPoint.y - headLength * Math.sin(arrowAngle + headAngle),
+              };
+
+              if (hasCustomFill) {
+                ctx.beginPath();
+                ctx.moveTo(endPoint.x, endPoint.y);
+                ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
+                ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
+                ctx.closePath();
+                ctx.fillStyle = getAnnotationFillStyle(annotation, 0.4);
+                ctx.fill();
+              }
+
+              // Arrowhead halo casing
               ctx.beginPath();
               ctx.moveTo(endPoint.x, endPoint.y);
               ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
+              ctx.moveTo(endPoint.x, endPoint.y);
               ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
-              ctx.closePath();
-              ctx.fillStyle = getAnnotationFillStyle(annotation, 0.4);
-              ctx.fill();
-            }
+              ctx.lineWidth = isSelected ? 6 : 5;
+              ctx.strokeStyle = colorWithAlpha(theme.COLOR_BACKGROUND, 0.85);
+              ctx.setLineDash([]);
+              ctx.stroke();
 
-            ctx.beginPath();
-            ctx.moveTo(endPoint.x, endPoint.y);
-            ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
-            ctx.moveTo(endPoint.x, endPoint.y);
-            ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = annotation.color;
-            ctx.stroke();
+              // Arrowhead primary stroke
+              ctx.beginPath();
+              ctx.moveTo(endPoint.x, endPoint.y);
+              ctx.lineTo(leftArrowPt.x, leftArrowPt.y);
+              ctx.moveTo(endPoint.x, endPoint.y);
+              ctx.lineTo(rightArrowPt.x, rightArrowPt.y);
+              ctx.lineWidth = isSelected ? 3 : 2.5;
+              ctx.strokeStyle = annotation.color;
+              ctx.stroke();
+
+              if (
+                annotation.title !== undefined &&
+                annotation.title.trim().length > 0
+              ) {
+                renderTitlePill(
+                  ctx,
+                  annotation.title,
+                  annotation.color,
+                  theme.COLOR_BACKGROUND,
+                  {kind: 'arrow', midpoint: curveMidpoint},
+                );
+              }
+            } finally {
+              ctx.restore();
+            }
           }
         }
       }
@@ -1037,6 +1406,34 @@ export class AnnotationsOverlay implements Overlay {
         }
       }
 
+      // Render active delete animations
+      for (const [id, delAnim] of this.deleteAnims.entries()) {
+        const elapsed = now - delAnim.startMs;
+        if (elapsed < 180) {
+          hasActiveAnims = true;
+          const t = Math.max(0, Math.min(1, elapsed / 180));
+          const ease = 1 - Math.pow(1 - t, 3);
+          ctx.save();
+          try {
+            ctx.globalAlpha = (1 - ease) * 0.7;
+            ctx.strokeStyle = delAnim.annotation.color;
+            ctx.lineWidth = 2;
+            const inset = ease * 4;
+            const b = delAnim.geometry.bbox;
+            ctx.strokeRect(
+              b.left + inset,
+              b.top + inset,
+              Math.max(0, b.width - inset * 2),
+              Math.max(0, b.height - inset * 2),
+            );
+          } finally {
+            ctx.restore();
+          }
+        } else {
+          this.deleteAnims.delete(id);
+        }
+      }
+
       // Pass 5: Draw gesture preview
       const preview = this.tools.preview;
       if (preview !== undefined) {
@@ -1128,10 +1525,7 @@ export class AnnotationsOverlay implements Overlay {
           case 'pen': {
             if (preview.points.length > 1) {
               ctx.beginPath();
-              ctx.moveTo(preview.points[0].x, preview.points[0].y);
-              for (let i = 1; i < preview.points.length; i += 1) {
-                ctx.lineTo(preview.points[i].x, preview.points[i].y);
-              }
+              drawSmoothPolyline(ctx, preview.points);
               ctx.lineWidth = 2;
               ctx.strokeStyle = preview.color;
               ctx.stroke();
@@ -1214,6 +1608,10 @@ export class AnnotationsOverlay implements Overlay {
           this.mergedGeometries;
         return id ? map.get(id) : map;
       });
+
+      if (hasActiveAnims) {
+        this.tools.requestRedraw?.();
+      }
     } finally {
       ctx.restore();
     }
